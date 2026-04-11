@@ -1,0 +1,1142 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>IM 通信系统</title>
+<style>
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  background: #f0f2f5;
+  color: #333;
+  height: 100vh;
+  overflow: hidden;
+}
+
+/* ===== Login/Register Page ===== */
+.auth-container {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100vh;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+}
+
+.auth-card {
+  background: #fff;
+  border-radius: 12px;
+  padding: 40px;
+  width: 380px;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+}
+
+.auth-card h2 {
+  text-align: center;
+  margin-bottom: 24px;
+  color: #333;
+  font-size: 24px;
+}
+
+.auth-card .tabs {
+  display: flex;
+  margin-bottom: 24px;
+  border-bottom: 2px solid #eee;
+}
+
+.auth-card .tabs button {
+  flex: 1;
+  padding: 10px;
+  border: none;
+  background: none;
+  font-size: 15px;
+  cursor: pointer;
+  color: #999;
+  transition: all 0.3s;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -2px;
+}
+
+.auth-card .tabs button.active {
+  color: #4A90D9;
+  border-bottom-color: #4A90D9;
+}
+
+.auth-card .form-group {
+  margin-bottom: 16px;
+}
+
+.auth-card .form-group label {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 14px;
+  color: #666;
+}
+
+.auth-card .form-group input {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  font-size: 14px;
+  transition: border-color 0.3s;
+  outline: none;
+}
+
+.auth-card .form-group input:focus {
+  border-color: #4A90D9;
+}
+
+.auth-card .btn-primary {
+  width: 100%;
+  padding: 12px;
+  background: #4A90D9;
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  font-size: 15px;
+  cursor: pointer;
+  transition: background 0.3s;
+  margin-top: 8px;
+}
+
+.auth-card .btn-primary:hover {
+  background: #357ABD;
+}
+
+.auth-card .error-msg {
+  color: #e74c3c;
+  font-size: 13px;
+  margin-top: 8px;
+  text-align: center;
+  min-height: 20px;
+}
+
+/* ===== Chat Page ===== */
+.chat-container {
+  display: flex;
+  height: 100vh;
+  background: #fff;
+}
+
+/* Sidebar */
+.sidebar {
+  width: 280px;
+  min-width: 280px;
+  background: #f5f5f5;
+  border-right: 1px solid #e0e0e0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.sidebar-header {
+  padding: 16px;
+  border-bottom: 1px solid #e0e0e0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: #fff;
+}
+
+.sidebar-header .user-info {
+  font-size: 15px;
+  font-weight: 600;
+  color: #333;
+}
+
+.sidebar-header .btn-logout {
+  padding: 4px 12px;
+  font-size: 12px;
+  background: none;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  cursor: pointer;
+  color: #666;
+  transition: all 0.3s;
+}
+
+.sidebar-header .btn-logout:hover {
+  border-color: #e74c3c;
+  color: #e74c3c;
+}
+
+.sidebar-sections {
+  flex: 1;
+  overflow-y: auto;
+}
+
+.sidebar-section {
+  padding: 12px 0;
+}
+
+.sidebar-section-title {
+  padding: 0 16px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #999;
+  text-transform: uppercase;
+  margin-bottom: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.sidebar-section-title .section-actions {
+  display: flex;
+  gap: 4px;
+}
+
+.sidebar-section-title .btn-action {
+  padding: 2px 6px;
+  font-size: 11px;
+  background: #4A90D9;
+  color: #fff;
+  border: none;
+  border-radius: 3px;
+  cursor: pointer;
+  transition: background 0.3s;
+}
+
+.sidebar-section-title .btn-action:hover {
+  background: #357ABD;
+}
+
+.contact-list {
+  list-style: none;
+}
+
+.contact-item {
+  padding: 10px 16px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  transition: background 0.2s;
+}
+
+.contact-item:hover {
+  background: #eaeaea;
+}
+
+.contact-item.active {
+  background: #e3effa;
+  border-left: 3px solid #4A90D9;
+}
+
+.contact-item .contact-name {
+  font-size: 14px;
+  color: #333;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.contact-item .online-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #ccc;
+}
+
+.contact-item .online-dot.online {
+  background: #2ecc71;
+}
+
+.contact-item .unread-badge {
+  background: #e74c3c;
+  color: #fff;
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 10px;
+  display: none;
+}
+
+.contact-item .unread-badge.show {
+  display: inline-block;
+}
+
+/* Inline forms */
+.inline-form {
+  padding: 8px 16px;
+  display: none;
+}
+
+.inline-form.show {
+  display: flex;
+  gap: 6px;
+}
+
+.inline-form input {
+  flex: 1;
+  padding: 6px 8px;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  font-size: 13px;
+  outline: none;
+}
+
+.inline-form input:focus {
+  border-color: #4A90D9;
+}
+
+.inline-form button {
+  padding: 6px 10px;
+  background: #4A90D9;
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.inline-form button.btn-cancel {
+  background: #999;
+}
+
+/* Main chat area */
+.chat-main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.chat-header {
+  padding: 16px 20px;
+  border-bottom: 1px solid #e0e0e0;
+  font-size: 16px;
+  font-weight: 600;
+  color: #333;
+  background: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.chat-header .delete-friend-btn {
+  padding: 4px 10px;
+  font-size: 12px;
+  background: none;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  cursor: pointer;
+  color: #e74c3c;
+  transition: all 0.3s;
+}
+
+.chat-header .delete-friend-btn:hover {
+  background: #e74c3c;
+  color: #fff;
+  border-color: #e74c3c;
+}
+
+.chat-messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: 20px;
+  background: #f9f9f9;
+}
+
+.chat-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: #999;
+  font-size: 15px;
+}
+
+.message-item {
+  margin-bottom: 16px;
+  display: flex;
+  flex-direction: column;
+}
+
+.message-item.own {
+  align-items: flex-end;
+}
+
+.message-item.other {
+  align-items: flex-start;
+}
+
+.message-sender {
+  font-size: 12px;
+  color: #999;
+  margin-bottom: 4px;
+  padding: 0 12px;
+}
+
+.message-bubble {
+  max-width: 60%;
+  padding: 10px 14px;
+  border-radius: 12px;
+  font-size: 14px;
+  line-height: 1.5;
+  word-break: break-word;
+}
+
+.message-item.own .message-bubble {
+  background: #4A90D9;
+  color: #fff;
+  border-bottom-right-radius: 4px;
+}
+
+.message-item.other .message-bubble {
+  background: #e8e8e8;
+  color: #333;
+  border-bottom-left-radius: 4px;
+}
+
+.message-time {
+  font-size: 11px;
+  color: #aaa;
+  margin-top: 4px;
+  padding: 0 12px;
+}
+
+/* Chat input */
+.chat-input-area {
+  padding: 16px 20px;
+  border-top: 1px solid #e0e0e0;
+  background: #fff;
+  display: flex;
+  gap: 10px;
+}
+
+.chat-input-area input {
+  flex: 1;
+  padding: 10px 14px;
+  border: 1px solid #ddd;
+  border-radius: 20px;
+  font-size: 14px;
+  outline: none;
+  transition: border-color 0.3s;
+}
+
+.chat-input-area input:focus {
+  border-color: #4A90D9;
+}
+
+.chat-input-area .btn-send {
+  padding: 10px 20px;
+  background: #4A90D9;
+  color: #fff;
+  border: none;
+  border-radius: 20px;
+  font-size: 14px;
+  cursor: pointer;
+  transition: background 0.3s;
+}
+
+.chat-input-area .btn-send:hover {
+  background: #357ABD;
+}
+
+.chat-input-area .btn-send:disabled {
+  background: #b0c4de;
+  cursor: not-allowed;
+}
+
+/* Connection status */
+.ws-status {
+  font-size: 11px;
+  padding: 4px 8px;
+  border-radius: 3px;
+  margin-left: 10px;
+}
+
+.ws-status.connected {
+  color: #2ecc71;
+}
+
+.ws-status.disconnected {
+  color: #e74c3c;
+}
+
+/* Scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #ccc;
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #aaa;
+}
+</style>
+</head>
+<body>
+
+<!-- Auth Page -->
+<div id="authPage" class="auth-container" style="display:none;">
+  <div class="auth-card">
+    <h2>IM 通信系统</h2>
+    <div class="tabs">
+      <button id="tabLogin" class="active" onclick="switchTab('login')">登录</button>
+      <button id="tabRegister" onclick="switchTab('register')">注册</button>
+    </div>
+    <!-- Login Form -->
+    <div id="loginForm">
+      <div class="form-group">
+        <label>用户名</label>
+        <input type="text" id="loginUsername" placeholder="请输入用户名" autocomplete="username">
+      </div>
+      <div class="form-group">
+        <label>密码</label>
+        <input type="password" id="loginPassword" placeholder="请输入密码" autocomplete="current-password">
+      </div>
+      <button class="btn-primary" onclick="doLogin()">登录</button>
+    </div>
+    <!-- Register Form -->
+    <div id="registerForm" style="display:none;">
+      <div class="form-group">
+        <label>用户名</label>
+        <input type="text" id="regUsername" placeholder="请输入用户名" autocomplete="username">
+      </div>
+      <div class="form-group">
+        <label>密码</label>
+        <input type="password" id="regPassword" placeholder="请输入密码" autocomplete="new-password">
+      </div>
+      <div class="form-group">
+        <label>昵称</label>
+        <input type="text" id="regNickname" placeholder="请输入昵称">
+      </div>
+      <button class="btn-primary" onclick="doRegister()">注册</button>
+    </div>
+    <div id="authError" class="error-msg"></div>
+  </div>
+</div>
+
+<!-- Chat Page -->
+<div id="chatPage" class="chat-container" style="display:none;">
+  <!-- Sidebar -->
+  <div class="sidebar">
+    <div class="sidebar-header">
+      <span class="user-info" id="userNickname"></span>
+      <button class="btn-logout" onclick="doLogout()">退出</button>
+    </div>
+    <div class="sidebar-sections">
+      <!-- Friends Section -->
+      <div class="sidebar-section">
+        <div class="sidebar-section-title">
+          <span>好友</span>
+          <div class="section-actions">
+            <button class="btn-action" onclick="toggleInlineForm('addFriend')">添加</button>
+            <button class="btn-action" onclick="refreshFriends()">刷新</button>
+          </div>
+        </div>
+        <div id="addFriendForm" class="inline-form">
+          <input type="text" id="addFriendId" placeholder="输入好友ID">
+          <button onclick="doAddFriend()">确认</button>
+          <button class="btn-cancel" onclick="toggleInlineForm('addFriend')">取消</button>
+        </div>
+        <ul id="friendList" class="contact-list"></ul>
+      </div>
+      <!-- Groups Section -->
+      <div class="sidebar-section">
+        <div class="sidebar-section-title">
+          <span>群组</span>
+          <div class="section-actions">
+            <button class="btn-action" onclick="toggleInlineForm('createGroup')">创建</button>
+            <button class="btn-action" onclick="toggleInlineForm('joinGroup')">加入</button>
+          </div>
+        </div>
+        <div id="createGroupForm" class="inline-form">
+          <input type="text" id="createGroupName" placeholder="群组名称">
+          <button onclick="doCreateGroup()">确认</button>
+          <button class="btn-cancel" onclick="toggleInlineForm('createGroup')">取消</button>
+        </div>
+        <div id="joinGroupForm" class="inline-form">
+          <input type="text" id="joinGroupId" placeholder="群组ID">
+          <button onclick="doJoinGroup()">确认</button>
+          <button class="btn-cancel" onclick="toggleInlineForm('joinGroup')">取消</button>
+        </div>
+        <ul id="groupList" class="contact-list"></ul>
+      </div>
+    </div>
+  </div>
+
+  <!-- Main Chat Area -->
+  <div class="chat-main">
+    <div class="chat-header">
+      <span>
+        <span id="chatTargetName">选择一个聊天</span>
+        <span id="wsStatus" class="ws-status disconnected">未连接</span>
+      </span>
+      <button id="deleteFriendBtn" class="delete-friend-btn" style="display:none;" onclick="doDeleteFriend()">删除好友</button>
+    </div>
+    <div class="chat-messages" id="chatMessages">
+      <div class="chat-empty" id="chatEmpty">选择一个好友或群组开始聊天</div>
+    </div>
+    <div class="chat-input-area">
+      <input type="text" id="msgInput" placeholder="输入消息..." disabled onkeydown="if(event.key==='Enter')sendMessage()">
+      <button class="btn-send" id="btnSend" disabled onclick="sendMessage()">发送</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// ===== Config =====
+const API_BASE = '';
+const WS_PORT = 9090;
+
+// ===== State =====
+let token = localStorage.getItem('im_token') || '';
+let userId = parseInt(localStorage.getItem('im_userId')) || 0;
+let nickname = localStorage.getItem('im_nickname') || '';
+let ws = null;
+let wsReconnectTimer = null;
+
+let currentChat = null; // { type: 'friend'|'group', id: number, name: string }
+let friends = []; // [{userId, username, nickname}]
+let groups = []; // [{groupId, name, ownerId}]
+let onlineUsers = new Set();
+let unreadCounts = {}; // key: 'friend_id' or 'group_id', value: number
+let messageCache = {}; // key: 'friend_id' or 'group_id', value: [messages]
+
+// ===== UUID =====
+function generateUUID() {
+  if (crypto.randomUUID) return crypto.randomUUID();
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+    const r = Math.random() * 16 | 0;
+    return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16);
+  });
+}
+
+// ===== Time Format =====
+function formatTime(ts) {
+  if (!ts) return '';
+  const d = new Date(typeof ts === 'number' ? ts : parseInt(ts));
+  const today = new Date();
+  if (d.toDateString() === today.toDateString()) {
+    return d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+  }
+  return d.toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' }) + ' ' +
+         d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+}
+
+// ===== API Helper =====
+async function api(method, path, body) {
+  const opts = {
+    method: method,
+    headers: { 'Content-Type': 'application/json' }
+  };
+  if (token) {
+    opts.headers['Authorization'] = 'Bearer ' + token;
+  }
+  if (body) {
+    opts.body = JSON.stringify(body);
+  }
+  const res = await fetch(API_BASE + path, opts);
+  const data = await res.json();
+  if (!res.ok && !data.success) {
+    throw new Error(data.message || data.error || '请求失败');
+  }
+  return data;
+}
+
+// ===== Auth =====
+function switchTab(tab) {
+  document.getElementById('tabLogin').classList.toggle('active', tab === 'login');
+  document.getElementById('tabRegister').classList.toggle('active', tab === 'register');
+  document.getElementById('loginForm').style.display = tab === 'login' ? 'block' : 'none';
+  document.getElementById('registerForm').style.display = tab === 'register' ? 'block' : 'none';
+  document.getElementById('authError').textContent = '';
+}
+
+async function doLogin() {
+  const username = document.getElementById('loginUsername').value.trim();
+  const password = document.getElementById('loginPassword').value.trim();
+  if (!username || !password) {
+    document.getElementById('authError').textContent = '请填写所有字段';
+    return;
+  }
+  try {
+    const data = await api('POST', '/api/login', { username, password });
+    if (data.success) {
+      token = data.token;
+      userId = data.userId;
+      nickname = data.nickname || username;
+      localStorage.setItem('im_token', token);
+      localStorage.setItem('im_userId', userId);
+      localStorage.setItem('im_nickname', nickname);
+      showChatPage();
+    } else {
+      document.getElementById('authError').textContent = data.message || '登录失败';
+    }
+  } catch (e) {
+    document.getElementById('authError').textContent = e.message;
+  }
+}
+
+async function doRegister() {
+  const username = document.getElementById('regUsername').value.trim();
+  const password = document.getElementById('regPassword').value.trim();
+  const nick = document.getElementById('regNickname').value.trim();
+  if (!username || !password || !nick) {
+    document.getElementById('authError').textContent = '请填写所有字段';
+    return;
+  }
+  try {
+    const data = await api('POST', '/api/register', { username, password, nickname: nick });
+    if (data.success) {
+      document.getElementById('authError').textContent = '';
+      switchTab('login');
+      document.getElementById('loginUsername').value = username;
+      document.getElementById('loginPassword').value = password;
+      alert('注册成功，请登录');
+    } else {
+      document.getElementById('authError').textContent = data.message || '注册失败';
+    }
+  } catch (e) {
+    document.getElementById('authError').textContent = e.message;
+  }
+}
+
+function doLogout() {
+  token = '';
+  userId = 0;
+  nickname = '';
+  localStorage.removeItem('im_token');
+  localStorage.removeItem('im_userId');
+  localStorage.removeItem('im_nickname');
+  if (ws) { ws.close(); ws = null; }
+  if (wsReconnectTimer) { clearTimeout(wsReconnectTimer); wsReconnectTimer = null; }
+  currentChat = null;
+  friends = [];
+  groups = [];
+  onlineUsers.clear();
+  unreadCounts = {};
+  messageCache = {};
+  showAuthPage();
+}
+
+// ===== Page Navigation =====
+function showAuthPage() {
+  document.getElementById('authPage').style.display = 'flex';
+  document.getElementById('chatPage').style.display = 'none';
+}
+
+function showChatPage() {
+  document.getElementById('authPage').style.display = 'none';
+  document.getElementById('chatPage').style.display = 'flex';
+  document.getElementById('userNickname').textContent = nickname;
+  loadFriends();
+  loadGroups();
+  connectWebSocket();
+}
+
+// ===== Friends =====
+async function loadFriends() {
+  try {
+    friends = await api('GET', '/api/friends');
+    renderFriendList();
+  } catch (e) {
+    console.error('加载好友列表失败:', e);
+  }
+}
+
+function refreshFriends() {
+  loadFriends();
+}
+
+function renderFriendList() {
+  const list = document.getElementById('friendList');
+  list.innerHTML = '';
+  friends.forEach(f => {
+    const li = document.createElement('li');
+    li.className = 'contact-item' + (currentChat && currentChat.type === 'friend' && currentChat.id === f.userId ? ' active' : '');
+    const key = 'friend_' + f.userId;
+    const unread = unreadCounts[key] || 0;
+    const isOnline = onlineUsers.has(String(f.userId));
+    li.innerHTML = `
+      <span class="contact-name">
+        <span class="online-dot ${isOnline ? 'online' : ''}"></span>
+        ${escapeHtml(f.nickname || f.username)}
+      </span>
+      <span class="unread-badge ${unread > 0 ? 'show' : ''}">${unread}</span>
+    `;
+    li.onclick = () => selectChat('friend', f.userId, f.nickname || f.username);
+    list.appendChild(li);
+  });
+}
+
+async function doAddFriend() {
+  const friendId = parseInt(document.getElementById('addFriendId').value.trim());
+  if (!friendId) { alert('请输入有效的好友ID'); return; }
+  try {
+    await api('POST', '/api/friends/add', { friendId });
+    document.getElementById('addFriendId').value = '';
+    toggleInlineForm('addFriend');
+    loadFriends();
+  } catch (e) {
+    alert('添加好友失败: ' + e.message);
+  }
+}
+
+async function doDeleteFriend() {
+  if (!currentChat || currentChat.type !== 'friend') return;
+  if (!confirm('确认删除好友 ' + currentChat.name + '?')) return;
+  try {
+    await api('POST', '/api/friends/delete', { friendId: currentChat.id });
+    currentChat = null;
+    renderChatArea();
+    loadFriends();
+  } catch (e) {
+    alert('删除好友失败: ' + e.message);
+  }
+}
+
+// ===== Groups =====
+async function loadGroups() {
+  try {
+    groups = await api('GET', '/api/groups');
+    renderGroupList();
+  } catch (e) {
+    console.error('加载群组列表失败:', e);
+  }
+}
+
+function renderGroupList() {
+  const list = document.getElementById('groupList');
+  list.innerHTML = '';
+  groups.forEach(g => {
+    const li = document.createElement('li');
+    li.className = 'contact-item' + (currentChat && currentChat.type === 'group' && currentChat.id === g.groupId ? ' active' : '');
+    const key = 'group_' + g.groupId;
+    const unread = unreadCounts[key] || 0;
+    li.innerHTML = `
+      <span class="contact-name">${escapeHtml(g.name)}</span>
+      <span class="unread-badge ${unread > 0 ? 'show' : ''}">${unread}</span>
+    `;
+    li.onclick = () => selectChat('group', g.groupId, g.name);
+    list.appendChild(li);
+  });
+}
+
+async function doCreateGroup() {
+  const name = document.getElementById('createGroupName').value.trim();
+  if (!name) { alert('请输入群组名称'); return; }
+  try {
+    await api('POST', '/api/groups/create', { name });
+    document.getElementById('createGroupName').value = '';
+    toggleInlineForm('createGroup');
+    loadGroups();
+  } catch (e) {
+    alert('创建群组失败: ' + e.message);
+  }
+}
+
+async function doJoinGroup() {
+  const groupId = parseInt(document.getElementById('joinGroupId').value.trim());
+  if (!groupId) { alert('请输入有效的群组ID'); return; }
+  try {
+    await api('POST', '/api/groups/join', { groupId });
+    document.getElementById('joinGroupId').value = '';
+    toggleInlineForm('joinGroup');
+    loadGroups();
+  } catch (e) {
+    alert('加入群组失败: ' + e.message);
+  }
+}
+
+// ===== Inline Form Toggle =====
+function toggleInlineForm(name) {
+  const form = document.getElementById(name + 'Form');
+  form.classList.toggle('show');
+}
+
+// ===== Chat Selection =====
+async function selectChat(type, id, name) {
+  currentChat = { type, id, name };
+  const key = type + '_' + id;
+  unreadCounts[key] = 0;
+
+  renderFriendList();
+  renderGroupList();
+  renderChatArea();
+
+  // Load history
+  try {
+    const param = type === 'friend' ? 'peerId=' + id : 'groupId=' + id;
+    const messages = await api('GET', '/api/messages/history?' + param);
+    messageCache[key] = (messages || []).map(m => ({
+      msgId: m.msgId,
+      from: m.from,
+      to: m.to,
+      content: m.content,
+      timestamp: m.timestamp
+    }));
+    renderMessages();
+  } catch (e) {
+    console.error('加载历史消息失败:', e);
+    messageCache[key] = [];
+    renderMessages();
+  }
+}
+
+function renderChatArea() {
+  const headerName = document.getElementById('chatTargetName');
+  const deleteBtn = document.getElementById('deleteFriendBtn');
+  const msgInput = document.getElementById('msgInput');
+  const btnSend = document.getElementById('btnSend');
+  const chatEmpty = document.getElementById('chatEmpty');
+
+  if (!currentChat) {
+    headerName.textContent = '选择一个聊天';
+    deleteBtn.style.display = 'none';
+    msgInput.disabled = true;
+    btnSend.disabled = true;
+    chatEmpty.style.display = 'flex';
+    document.getElementById('chatMessages').querySelectorAll('.message-item').forEach(el => el.remove());
+    return;
+  }
+
+  headerName.textContent = currentChat.name + (currentChat.type === 'group' ? ' (群组)' : '');
+  deleteBtn.style.display = currentChat.type === 'friend' ? 'inline-block' : 'none';
+  msgInput.disabled = false;
+  btnSend.disabled = false;
+  chatEmpty.style.display = 'none';
+  msgInput.focus();
+}
+
+function renderMessages() {
+  const container = document.getElementById('chatMessages');
+  const empty = document.getElementById('chatEmpty');
+  // Remove all message items
+  container.querySelectorAll('.message-item').forEach(el => el.remove());
+
+  if (!currentChat) { empty.style.display = 'flex'; return; }
+
+  const key = currentChat.type + '_' + currentChat.id;
+  const messages = messageCache[key] || [];
+
+  if (messages.length === 0) {
+    empty.style.display = 'flex';
+    empty.textContent = '暂无消息';
+    return;
+  }
+
+  empty.style.display = 'none';
+
+  messages.forEach(msg => {
+    appendMessageToDOM(msg);
+  });
+
+  scrollToBottom();
+}
+
+function appendMessageToDOM(msg) {
+  const container = document.getElementById('chatMessages');
+  const isOwn = msg.from == userId;
+  const div = document.createElement('div');
+  div.className = 'message-item ' + (isOwn ? 'own' : 'other');
+
+  let senderName = '';
+  if (!isOwn) {
+    if (currentChat && currentChat.type === 'group') {
+      const friend = friends.find(f => f.userId == msg.from);
+      senderName = friend ? (friend.nickname || friend.username) : ('用户' + msg.from);
+    } else {
+      senderName = currentChat ? currentChat.name : '';
+    }
+  }
+
+  div.innerHTML = `
+    ${!isOwn && senderName ? '<div class="message-sender">' + escapeHtml(senderName) + '</div>' : ''}
+    <div class="message-bubble">${escapeHtml(msg.content)}</div>
+    <div class="message-time">${formatTime(msg.timestamp)}</div>
+  `;
+
+  container.appendChild(div);
+}
+
+function scrollToBottom() {
+  const container = document.getElementById('chatMessages');
+  container.scrollTop = container.scrollHeight;
+}
+
+// ===== Send Message =====
+function sendMessage() {
+  if (!currentChat || !ws || ws.readyState !== WebSocket.OPEN) return;
+  const input = document.getElementById('msgInput');
+  const content = input.value.trim();
+  if (!content) return;
+
+  const msgId = generateUUID();
+  const msg = {
+    type: currentChat.type === 'friend' ? 'msg' : 'group_msg',
+    to: String(currentChat.id),
+    content: content,
+    msgId: msgId
+  };
+
+  ws.send(JSON.stringify(msg));
+
+  // Add to local cache
+  const key = currentChat.type + '_' + currentChat.id;
+  if (!messageCache[key]) messageCache[key] = [];
+  const localMsg = {
+    msgId: msgId,
+    from: userId,
+    to: currentChat.id,
+    content: content,
+    timestamp: Date.now()
+  };
+  messageCache[key].push(localMsg);
+
+  appendMessageToDOM(localMsg);
+  scrollToBottom();
+
+  input.value = '';
+  input.focus();
+}
+
+// ===== WebSocket =====
+function connectWebSocket() {
+  if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
+    return;
+  }
+
+  const wsUrl = 'ws://' + location.hostname + ':' + WS_PORT + '/ws?token=' + token;
+  ws = new WebSocket(wsUrl);
+
+  ws.onopen = () => {
+    console.log('WebSocket connected');
+    updateWsStatus(true);
+    if (wsReconnectTimer) { clearTimeout(wsReconnectTimer); wsReconnectTimer = null; }
+  };
+
+  ws.onclose = () => {
+    console.log('WebSocket disconnected');
+    updateWsStatus(false);
+    scheduleReconnect();
+  };
+
+  ws.onerror = (e) => {
+    console.error('WebSocket error:', e);
+    updateWsStatus(false);
+  };
+
+  ws.onmessage = (event) => {
+    try {
+      const data = JSON.parse(event.data);
+      handleWsMessage(data);
+    } catch (e) {
+      console.error('解析消息失败:', e);
+    }
+  };
+}
+
+function scheduleReconnect() {
+  if (wsReconnectTimer) return;
+  if (!token) return;
+  wsReconnectTimer = setTimeout(() => {
+    wsReconnectTimer = null;
+    console.log('尝试重新连接...');
+    connectWebSocket();
+  }, 3000);
+}
+
+function updateWsStatus(connected) {
+  const el = document.getElementById('wsStatus');
+  if (connected) {
+    el.textContent = '已连接';
+    el.className = 'ws-status connected';
+  } else {
+    el.textContent = '未连接';
+    el.className = 'ws-status disconnected';
+  }
+}
+
+function handleWsMessage(data) {
+  switch (data.type) {
+    case 'msg': {
+      // Private message from someone
+      const fromId = data.from;
+      const key = 'friend_' + fromId;
+      if (!messageCache[key]) messageCache[key] = [];
+      const msg = { msgId: data.msgId, from: fromId, to: data.to, content: data.content, timestamp: data.timestamp };
+      messageCache[key].push(msg);
+
+      if (currentChat && currentChat.type === 'friend' && currentChat.id == fromId) {
+        appendMessageToDOM(msg);
+        scrollToBottom();
+      } else {
+        unreadCounts[key] = (unreadCounts[key] || 0) + 1;
+        renderFriendList();
+      }
+      break;
+    }
+    case 'group_msg': {
+      const groupId = data.to;
+      const key = 'group_' + groupId;
+      if (!messageCache[key]) messageCache[key] = [];
+      // Skip own messages (already displayed locally)
+      if (data.from == userId) break;
+      const msg = { msgId: data.msgId, from: data.from, to: groupId, content: data.content, timestamp: data.timestamp };
+      messageCache[key].push(msg);
+
+      if (currentChat && currentChat.type === 'group' && currentChat.id == groupId) {
+        appendMessageToDOM(msg);
+        scrollToBottom();
+      } else {
+        unreadCounts[key] = (unreadCounts[key] || 0) + 1;
+        renderGroupList();
+      }
+      break;
+    }
+    case 'ack': {
+      // Message acknowledged
+      break;
+    }
+    case 'online': {
+      onlineUsers.add(String(data.userId));
+      renderFriendList();
+      break;
+    }
+    case 'offline': {
+      onlineUsers.delete(String(data.userId));
+      renderFriendList();
+      break;
+    }
+    case 'error': {
+      console.error('服务器错误:', data.message);
+      alert('服务器错误: ' + data.message);
+      break;
+    }
+  }
+}
+
+// ===== Utility =====
+function escapeHtml(text) {
+  const div = document.createElement('div');
+  div.textContent = text;
+  return div.innerHTML;
+}
+
+// ===== Init =====
+(function init() {
+  if (token && userId) {
+    showChatPage();
+  } else {
+    showAuthPage();
+  }
+})();
+</script>
+</body>
+</html>

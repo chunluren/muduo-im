@@ -60,6 +60,9 @@ private:
     // ==================== HTTP REST API ====================
 
     void setupHttpRoutes() {
+        // 静态文件服务（前端）
+        httpServer_.serveStatic("/", "../web");
+
         // POST /api/register
         httpServer_.POST("/api/register", [this](const HttpRequest& req, HttpResponse& resp) {
             auto j = json::parse(req.body, nullptr, false);
