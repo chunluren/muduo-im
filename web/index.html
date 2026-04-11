@@ -444,6 +444,135 @@ body {
   cursor: not-allowed;
 }
 
+.chat-input-area .btn-file {
+  padding: 10px 14px;
+  background: none;
+  border: 1px solid #ddd;
+  border-radius: 20px;
+  font-size: 16px;
+  cursor: pointer;
+  transition: all 0.3s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.chat-input-area .btn-file:hover {
+  border-color: #4A90D9;
+  background: #f0f6ff;
+}
+
+.chat-input-area .btn-file:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* File message */
+.file-msg-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  text-decoration: none;
+  color: inherit;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: rgba(0,0,0,0.06);
+  transition: background 0.2s;
+}
+
+.file-msg-link:hover {
+  background: rgba(0,0,0,0.1);
+}
+
+.message-item.own .file-msg-link {
+  background: rgba(255,255,255,0.15);
+  color: #fff;
+}
+
+.message-item.own .file-msg-link:hover {
+  background: rgba(255,255,255,0.25);
+}
+
+.file-msg-icon {
+  font-size: 20px;
+  flex-shrink: 0;
+}
+
+.file-msg-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.file-msg-name {
+  font-size: 13px;
+  font-weight: 500;
+  word-break: break-all;
+}
+
+.file-msg-size {
+  font-size: 11px;
+  opacity: 0.7;
+}
+
+/* Recalled message */
+.message-recalled .message-bubble {
+  background: transparent !important;
+  color: #999 !important;
+  font-style: italic;
+  font-size: 13px;
+  padding: 6px 12px;
+}
+
+/* Read receipt indicator */
+.message-read-status {
+  font-size: 11px;
+  color: #aaa;
+  padding: 0 12px;
+  margin-top: 1px;
+}
+
+.message-read-status.read {
+  color: #4A90D9;
+}
+
+/* Recall button on hover */
+.message-item.own .message-bubble-wrapper {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 60%;
+}
+
+.message-item.own .message-bubble-wrapper .message-bubble {
+  max-width: 100%;
+}
+
+.btn-recall {
+  display: none;
+  padding: 2px 6px;
+  font-size: 11px;
+  background: #f5f5f5;
+  border: 1px solid #ddd;
+  border-radius: 3px;
+  cursor: pointer;
+  color: #999;
+  white-space: nowrap;
+  transition: all 0.2s;
+  flex-shrink: 0;
+}
+
+.btn-recall:hover {
+  background: #e74c3c;
+  color: #fff;
+  border-color: #e74c3c;
+}
+
+.message-item.own:hover .btn-recall.recallable {
+  display: inline-block;
+}
+
 /* Connection status */
 .ws-status {
   font-size: 11px;
@@ -583,6 +712,8 @@ body {
       <div class="chat-empty" id="chatEmpty">选择一个好友或群组开始聊天</div>
     </div>
     <div class="chat-input-area">
+      <input type="file" id="fileInput" style="display:none" onchange="handleFileSelected(event)">
+      <button class="btn-file" id="btnFile" disabled onclick="document.getElementById('fileInput').click()" title="发送文件">&#x1F4CE;</button>
       <input type="text" id="msgInput" placeholder="输入消息..." disabled onkeydown="if(event.key==='Enter')sendMessage()">
       <button class="btn-send" id="btnSend" disabled onclick="sendMessage()">发送</button>
     </div>
@@ -879,9 +1010,22 @@ async function selectChat(type, id, name) {
       from: m.from,
       to: m.to,
       content: m.content,
+      fileUrl: m.fileUrl || m.url,
+      filename: m.filename,
+      fileSize: m.fileSize,
+      recalled: m.recalled || false,
+      read: m.read || false,
       timestamp: m.timestamp
     }));
     renderMessages();
+
+    // Send read ack for friend chats
+    if (type === 'friend' && messageCache[key].length > 0) {
+      const lastMsg = messageCache[key][messageCache[key].length - 1];
+      if (lastMsg.from != userId && lastMsg.msgId) {
+        sendReadAck(id, lastMsg.msgId);
+      }
+    }
   } catch (e) {
     console.error('加载历史消息失败:', e);
     messageCache[key] = [];
@@ -894,6 +1038,7 @@ function renderChatArea() {
   const deleteBtn = document.getElementById('deleteFriendBtn');
   const msgInput = document.getElementById('msgInput');
   const btnSend = document.getElementById('btnSend');
+  const btnFile = document.getElementById('btnFile');
   const chatEmpty = document.getElementById('chatEmpty');
 
   if (!currentChat) {
@@ -901,6 +1046,7 @@ function renderChatArea() {
     deleteBtn.style.display = 'none';
     msgInput.disabled = true;
     btnSend.disabled = true;
+    btnFile.disabled = true;
     chatEmpty.style.display = 'flex';
     document.getElementById('chatMessages').querySelectorAll('.message-item').forEach(el => el.remove());
     return;
@@ -910,6 +1056,7 @@ function renderChatArea() {
   deleteBtn.style.display = currentChat.type === 'friend' ? 'inline-block' : 'none';
   msgInput.disabled = false;
   btnSend.disabled = false;
+  btnFile.disabled = false;
   chatEmpty.style.display = 'none';
   msgInput.focus();
 }
@@ -945,6 +1092,15 @@ function appendMessageToDOM(msg) {
   const isOwn = msg.from == userId;
   const div = document.createElement('div');
   div.className = 'message-item ' + (isOwn ? 'own' : 'other');
+  if (msg.msgId) div.setAttribute('data-msg-id', msg.msgId);
+
+  // Check if recalled
+  if (msg.recalled) {
+    div.classList.add('message-recalled');
+    div.innerHTML = `<div class="message-bubble">[消息已撤回]</div>`;
+    container.appendChild(div);
+    return;
+  }
 
   let senderName = '';
   if (!isOwn) {
@@ -956,11 +1112,62 @@ function appendMessageToDOM(msg) {
     }
   }
 
-  div.innerHTML = `
-    ${!isOwn && senderName ? '<div class="message-sender">' + escapeHtml(senderName) + '</div>' : ''}
-    <div class="message-bubble">${escapeHtml(msg.content)}</div>
-    <div class="message-time">${formatTime(msg.timestamp)}</div>
-  `;
+  // Build bubble content
+  let bubbleContent = '';
+  if (msg.fileUrl) {
+    // File message
+    const fname = escapeHtml(msg.filename || '文件');
+    const fsize = msg.fileSize ? formatFileSize(msg.fileSize) : '';
+    bubbleContent = `<a class="file-msg-link" href="${escapeHtml(msg.fileUrl)}" target="_blank" download>
+      <span class="file-msg-icon">&#x1F4C4;</span>
+      <span class="file-msg-info">
+        <span class="file-msg-name">${fname}</span>
+        ${fsize ? '<span class="file-msg-size">' + fsize + '</span>' : ''}
+      </span>
+    </a>`;
+  } else {
+    bubbleContent = escapeHtml(msg.content);
+  }
+
+  // Recall button for own messages sent within 2 minutes
+  let recallBtn = '';
+  if (isOwn && msg.msgId && msg.timestamp && !msg.fileUrl) {
+    const elapsed = Date.now() - (typeof msg.timestamp === 'number' ? msg.timestamp : parseInt(msg.timestamp));
+    if (elapsed < 2 * 60 * 1000) {
+      recallBtn = `<button class="btn-recall recallable" onclick="recallMessage('${msg.msgId}')">撤回</button>`;
+    }
+  } else if (isOwn && msg.msgId && msg.timestamp && msg.fileUrl) {
+    const elapsed = Date.now() - (typeof msg.timestamp === 'number' ? msg.timestamp : parseInt(msg.timestamp));
+    if (elapsed < 2 * 60 * 1000) {
+      recallBtn = `<button class="btn-recall recallable" onclick="recallMessage('${msg.msgId}')">撤回</button>`;
+    }
+  }
+
+  // Read status for own messages
+  let readStatus = '';
+  if (isOwn && currentChat && currentChat.type === 'friend') {
+    const isRead = msg.read || false;
+    readStatus = `<div class="message-read-status ${isRead ? 'read' : ''}">${isRead ? '已读' : '未读'}</div>`;
+  }
+
+  if (isOwn && recallBtn) {
+    div.innerHTML = `
+      ${!isOwn && senderName ? '<div class="message-sender">' + escapeHtml(senderName) + '</div>' : ''}
+      <div class="message-bubble-wrapper">
+        ${recallBtn}
+        <div class="message-bubble">${bubbleContent}</div>
+      </div>
+      <div class="message-time">${formatTime(msg.timestamp)}</div>
+      ${readStatus}
+    `;
+  } else {
+    div.innerHTML = `
+      ${!isOwn && senderName ? '<div class="message-sender">' + escapeHtml(senderName) + '</div>' : ''}
+      <div class="message-bubble">${bubbleContent}</div>
+      <div class="message-time">${formatTime(msg.timestamp)}</div>
+      ${readStatus}
+    `;
+  }
 
   container.appendChild(div);
 }
@@ -1076,6 +1283,8 @@ function handleWsMessage(data) {
       if (currentChat && currentChat.type === 'friend' && currentChat.id == fromId) {
         appendMessageToDOM(msg);
         scrollToBottom();
+        // Auto-send read ack since we are viewing this chat
+        sendReadAck(fromId, msg.msgId);
       } else {
         unreadCounts[key] = (unreadCounts[key] || 0) + 1;
         renderFriendList();
@@ -1114,12 +1323,199 @@ function handleWsMessage(data) {
       renderFriendList();
       break;
     }
+    case 'file_msg': {
+      // File message from someone (private or group)
+      const fileFromId = data.from;
+      const fileKey = data.groupId ? ('group_' + data.groupId) : ('friend_' + fileFromId);
+      if (!messageCache[fileKey]) messageCache[fileKey] = [];
+      // Skip own file messages echoed back (already displayed locally)
+      if (data.from == userId && !data.groupId) break;
+      if (data.from == userId && data.groupId) break;
+      const fileMsg = {
+        msgId: data.msgId,
+        from: fileFromId,
+        to: data.to,
+        content: data.filename || '文件',
+        fileUrl: data.url,
+        filename: data.filename,
+        fileSize: data.fileSize,
+        timestamp: data.timestamp
+      };
+      messageCache[fileKey].push(fileMsg);
+
+      const isFileCurrentChat = data.groupId
+        ? (currentChat && currentChat.type === 'group' && currentChat.id == data.groupId)
+        : (currentChat && currentChat.type === 'friend' && currentChat.id == fileFromId);
+      if (isFileCurrentChat) {
+        appendMessageToDOM(fileMsg);
+        scrollToBottom();
+      } else {
+        unreadCounts[fileKey] = (unreadCounts[fileKey] || 0) + 1;
+        if (data.groupId) renderGroupList(); else renderFriendList();
+      }
+      break;
+    }
+    case 'recall': {
+      const recallMsgId = data.msgId;
+      // Update in all message caches
+      for (const key in messageCache) {
+        const msgs = messageCache[key];
+        for (let i = 0; i < msgs.length; i++) {
+          if (msgs[i].msgId === recallMsgId) {
+            msgs[i].recalled = true;
+            msgs[i].content = '[消息已撤回]';
+            delete msgs[i].fileUrl;
+            break;
+          }
+        }
+      }
+      // Update DOM: find the message element and replace it
+      const recallEl = document.querySelector('[data-msg-id="' + recallMsgId + '"]');
+      if (recallEl) {
+        recallEl.classList.add('message-recalled');
+        recallEl.innerHTML = '<div class="message-bubble">[消息已撤回]</div>';
+      }
+      break;
+    }
+    case 'read_ack': {
+      // The peer has read our messages up to lastMsgId
+      const ackFrom = data.from; // who sent the read ack (the reader)
+      const lastReadMsgId = data.lastMsgId;
+      const readKey = 'friend_' + ackFrom;
+      const readMsgs = messageCache[readKey] || [];
+      let found = false;
+      // Mark all own messages up to and including lastMsgId as read
+      for (let i = 0; i < readMsgs.length; i++) {
+        if (readMsgs[i].from == userId) {
+          readMsgs[i].read = true;
+        }
+        if (readMsgs[i].msgId === lastReadMsgId) {
+          found = true;
+          break;
+        }
+      }
+      // If lastMsgId not found, mark all own messages as read
+      if (!found) {
+        readMsgs.forEach(m => { if (m.from == userId) m.read = true; });
+      }
+      // Re-render if currently viewing that chat
+      if (currentChat && currentChat.type === 'friend' && currentChat.id == ackFrom) {
+        renderMessages();
+      }
+      break;
+    }
     case 'error': {
       console.error('服务器错误:', data.message);
       alert('服务器错误: ' + data.message);
       break;
     }
   }
+}
+
+// ===== File Upload =====
+function handleFileSelected(event) {
+  const file = event.target.files[0];
+  if (!file) return;
+  uploadFile(file);
+  event.target.value = ''; // Reset so same file can be selected again
+}
+
+async function uploadFile(file) {
+  if (!currentChat || !ws || ws.readyState !== WebSocket.OPEN) return;
+  const formData = new FormData();
+  formData.append('file', file);
+  try {
+    const resp = await fetch(API_BASE + '/api/upload', {
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + token },
+      body: formData
+    });
+    const result = await resp.json();
+    if (result.success) {
+      const msgId = generateUUID();
+      const wsMsg = {
+        type: 'file_msg',
+        to: String(currentChat.id),
+        msgId: msgId,
+        url: result.url,
+        filename: result.filename || file.name,
+        fileSize: result.size || file.size
+      };
+      if (currentChat.type === 'group') {
+        wsMsg.groupId = String(currentChat.id);
+      }
+      ws.send(JSON.stringify(wsMsg));
+
+      // Add to local cache and display
+      const key = currentChat.type + '_' + currentChat.id;
+      if (!messageCache[key]) messageCache[key] = [];
+      const localMsg = {
+        msgId: msgId,
+        from: userId,
+        to: currentChat.id,
+        content: result.filename || file.name,
+        fileUrl: result.url,
+        filename: result.filename || file.name,
+        fileSize: result.size || file.size,
+        timestamp: Date.now()
+      };
+      messageCache[key].push(localMsg);
+      appendMessageToDOM(localMsg);
+      scrollToBottom();
+    } else {
+      alert('文件上传失败: ' + (result.message || '未知错误'));
+    }
+  } catch (e) {
+    alert('文件上传失败: ' + e.message);
+  }
+}
+
+// ===== Message Recall =====
+function recallMessage(msgId) {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  ws.send(JSON.stringify({ type: 'recall', msgId: msgId }));
+
+  // Optimistically update local state
+  for (const key in messageCache) {
+    const msgs = messageCache[key];
+    for (let i = 0; i < msgs.length; i++) {
+      if (msgs[i].msgId === msgId) {
+        msgs[i].recalled = true;
+        msgs[i].content = '[消息已撤回]';
+        delete msgs[i].fileUrl;
+        break;
+      }
+    }
+  }
+  const el = document.querySelector('[data-msg-id="' + msgId + '"]');
+  if (el) {
+    el.classList.add('message-recalled');
+    el.innerHTML = '<div class="message-bubble">[消息已撤回]</div>';
+  }
+}
+
+// ===== Read Receipts =====
+function sendReadAck(peerId, lastMsgId) {
+  if (ws && ws.readyState === WebSocket.OPEN && lastMsgId) {
+    ws.send(JSON.stringify({
+      type: 'read_ack',
+      to: peerId.toString(),
+      lastMsgId: lastMsgId
+    }));
+  }
+}
+
+// ===== Format File Size =====
+function formatFileSize(bytes) {
+  if (!bytes || bytes === 0) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB'];
+  let i = 0;
+  let size = bytes;
+  while (size >= 1024 && i < units.length - 1) {
+    size /= 1024;
+    i++;
+  }
+  return size.toFixed(i === 0 ? 0 : 1) + ' ' + units[i];
 }
 
 // ===== Utility =====

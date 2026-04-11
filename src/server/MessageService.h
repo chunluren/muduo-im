@@ -2,6 +2,7 @@
 
 #include "pool/MySQLPool.h"
 #include <nlohmann/json.hpp>
+#include <chrono>
 #include <memory>
 #include <string>
 
@@ -97,6 +98,32 @@ public:
             }
         }
         return messages;
+    }
+
+    /// 撤回消息（只能撤回自己的、2分钟内的消息）
+    bool recallMessage(const std::string& msgId, int64_t fromUserId) {
+        auto conn = db_->acquire(3000);
+        if (!conn || !conn->valid()) return false;
+
+        int64_t twoMinAgo = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count() - 120000;
+
+        // Try private messages first
+        std::string sql = "DELETE FROM private_messages WHERE msg_id='" + conn->escape(msgId)
+            + "' AND from_user=" + std::to_string(fromUserId)
+            + " AND timestamp>" + std::to_string(twoMinAgo);
+        int affected = conn->execute(sql);
+
+        if (affected <= 0) {
+            // Try group messages
+            sql = "DELETE FROM group_messages WHERE msg_id='" + conn->escape(msgId)
+                + "' AND from_user=" + std::to_string(fromUserId)
+                + " AND timestamp>" + std::to_string(twoMinAgo);
+            affected = conn->execute(sql);
+        }
+
+        db_->release(std::move(conn));
+        return affected > 0;
     }
 
 private:

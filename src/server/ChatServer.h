@@ -8,14 +8,17 @@
 #include "server/GroupService.h"
 #include "server/MessageService.h"
 #include "http/HttpServer.h"
+#include "http/MultipartParser.h"
 #include "websocket/WebSocketServer.h"
 #include "pool/MySQLPool.h"
 #include "pool/RedisPool.h"
 #include "net/EventLoop.h"
 #include "net/InetAddress.h"
 #include <nlohmann/json.hpp>
+#include <fstream>
 #include <memory>
 #include <string>
+#include <sys/stat.h>
 
 using json = nlohmann::json;
 
@@ -226,6 +229,67 @@ private:
             }
             resp.setJson(result.dump());
         });
+
+        // POST /api/upload — file upload
+        httpServer_.POST("/api/upload", [this](const HttpRequest& req, HttpResponse& resp) {
+            int64_t userId = authFromRequest(req);
+            if (userId < 0) {
+                resp.setStatusCode(HttpStatusCode::UNAUTHORIZED);
+                resp.setText("unauthorized");
+                return;
+            }
+
+            // Parse multipart
+            std::string contentType = req.getHeader("content-type");
+            std::string boundary = MultipartParser::extractBoundary(contentType);
+            if (boundary.empty()) {
+                resp = HttpResponse::badRequest("missing boundary");
+                return;
+            }
+
+            auto parts = MultipartParser::parse(req.body, boundary);
+            if (parts.empty()) {
+                resp = HttpResponse::badRequest("no file uploaded");
+                return;
+            }
+
+            // Find file part
+            for (auto& part : parts) {
+                if (part.isFile() && !part.data.empty()) {
+                    // Ensure uploads directory exists
+                    ::mkdir("../uploads", 0755);
+
+                    // Generate unique filename
+                    std::string ext = "";
+                    auto dotPos = part.filename.rfind('.');
+                    if (dotPos != std::string::npos) ext = part.filename.substr(dotPos);
+                    std::string savedName = Protocol::generateMsgId() + ext;
+                    std::string filepath = "../uploads/" + savedName;
+
+                    // Write file
+                    std::ofstream ofs(filepath, std::ios::binary);
+                    if (!ofs) {
+                        resp = HttpResponse::serverError("failed to save file");
+                        return;
+                    }
+                    ofs.write(part.data.data(), part.data.size());
+                    ofs.close();
+
+                    resp.setJson(json({
+                        {"success", true},
+                        {"url", "/uploads/" + savedName},
+                        {"filename", part.filename},
+                        {"size", part.data.size()}
+                    }).dump());
+                    return;
+                }
+            }
+
+            resp = HttpResponse::badRequest("no file found in upload");
+        });
+
+        // Serve uploaded files
+        httpServer_.serveStatic("/uploads", "../uploads");
     }
 
     // ==================== WebSocket ====================
@@ -298,6 +362,12 @@ private:
                 handlePrivateMessage(session, j, userId);
             } else if (type == Protocol::GROUP_MSG) {
                 handleGroupMessage(session, j, userId);
+            } else if (type == Protocol::FILE_MSG) {
+                handleFileMessage(session, j, userId);
+            } else if (type == Protocol::RECALL) {
+                handleRecall(session, j, userId);
+            } else if (type == Protocol::READ_ACK) {
+                handleReadAck(session, j, userId);
             } else {
                 session->sendText(Protocol::makeError("unknown message type"));
             }
@@ -391,6 +461,76 @@ private:
             if (memberSession) {
                 memberSession->sendText(groupMsg);
             }
+        }
+    }
+
+    void handleFileMessage(const WsSessionPtr& session, const json& j, int64_t fromUserId) {
+        std::string toStr = j.value("to", "");
+        std::string url = j.value("url", "");
+        std::string filename = j.value("filename", "");
+        int64_t fileSize = j.value("fileSize", (int64_t)0);
+
+        if (toStr.empty() || url.empty()) {
+            session->sendText(Protocol::makeError("missing 'to' or 'url'"));
+            return;
+        }
+
+        int64_t toUserId = 0;
+        try { toUserId = std::stoll(toStr); } catch (...) {}
+
+        std::string msgId = Protocol::generateMsgId();
+        int64_t timestamp = Protocol::nowMs();
+
+        // Save as private message with file URL as content
+        std::string content = json({{"url", url}, {"filename", filename}, {"fileSize", fileSize}}).dump();
+        messageService_.savePrivateMessage(msgId, fromUserId, toUserId, content, timestamp);
+
+        session->sendText(Protocol::makeAck(msgId));
+
+        auto recipientSession = onlineManager_.getSession(toUserId);
+        if (recipientSession) {
+            recipientSession->sendText(Protocol::makeFileMsg(fromUserId, toUserId, url, filename, fileSize, msgId));
+        }
+    }
+
+    void handleRecall(const WsSessionPtr& session, const json& j, int64_t fromUserId) {
+        std::string msgId = j.value("msgId", "");
+        if (msgId.empty()) {
+            session->sendText(Protocol::makeError("missing msgId"));
+            return;
+        }
+
+        bool ok = messageService_.recallMessage(msgId, fromUserId);
+        if (!ok) {
+            session->sendText(Protocol::makeError("recall failed (timeout or not your message)"));
+            return;
+        }
+
+        // Notify sender
+        session->sendText(Protocol::makeRecall(msgId, fromUserId));
+
+        // Broadcast recall to all online friends (simplified: they'll remove the message)
+        auto friends = friendService_.getFriends(fromUserId);
+        std::string recallMsg = Protocol::makeRecall(msgId, fromUserId);
+        for (auto& f : friends) {
+            int64_t fid = f.value("userId", (int64_t)0);
+            auto s = onlineManager_.getSession(fid);
+            if (s) s->sendText(recallMsg);
+        }
+    }
+
+    void handleReadAck(const WsSessionPtr& /*session*/, const json& j, int64_t fromUserId) {
+        std::string toStr = j.value("to", "");
+        std::string lastMsgId = j.value("lastMsgId", "");
+        if (toStr.empty() || lastMsgId.empty()) return;
+
+        int64_t toUserId = 0;
+        try { toUserId = std::stoll(toStr); } catch (...) {}
+
+        // Forward read receipt to the original sender
+        auto senderSession = onlineManager_.getSession(toUserId);
+        if (senderSession) {
+            senderSession->sendText(Protocol::makeReadAck(fromUserId, toUserId, lastMsgId));
         }
     }
 

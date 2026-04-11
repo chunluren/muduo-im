@@ -19,6 +19,9 @@ inline const char* ACK         = "ack";
 inline const char* ONLINE      = "online";
 inline const char* OFFLINE     = "offline";
 inline const char* ERROR_MSG   = "error";
+inline const char* FILE_MSG    = "file_msg";
+inline const char* RECALL      = "recall";
+inline const char* READ_ACK    = "read_ack";
 
 /// 生成 UUID v4
 inline std::string generateMsgId() {
@@ -86,6 +89,32 @@ inline std::string makeOffline(int64_t userId) {
 /// 构造错误消息
 inline std::string makeError(const std::string& message) {
     return json({{"type", ERROR_MSG}, {"message", message}}).dump();
+}
+
+/// 构造文件消息
+inline std::string makeFileMsg(int64_t from, int64_t to, const std::string& url,
+                                const std::string& filename, int64_t fileSize, const std::string& msgId) {
+    json j;
+    j["type"] = FILE_MSG;
+    j["from"] = std::to_string(from);
+    j["to"] = std::to_string(to);
+    j["url"] = url;
+    j["filename"] = filename;
+    j["fileSize"] = fileSize;
+    j["msgId"] = msgId;
+    j["timestamp"] = nowMs();
+    return j.dump();
+}
+
+/// 构造撤回通知
+inline std::string makeRecall(const std::string& msgId, int64_t fromUserId) {
+    return json({{"type", RECALL}, {"msgId", msgId}, {"from", std::to_string(fromUserId)}}).dump();
+}
+
+/// 构造已读回执
+inline std::string makeReadAck(int64_t fromUserId, int64_t toUserId, const std::string& lastMsgId) {
+    return json({{"type", READ_ACK}, {"from", std::to_string(fromUserId)},
+                 {"to", std::to_string(toUserId)}, {"lastMsgId", lastMsgId}}).dump();
 }
 
 /// SHA256 哈希（密码存储用）
