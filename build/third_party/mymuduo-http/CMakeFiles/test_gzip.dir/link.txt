@@ -1,1 +1,0 @@
-/usr/bin/c++  -Wall -Wextra -O2 -Wall -Wextra -O2 CMakeFiles/test_gzip.dir/tests/test_gzip.cpp.o -o test_gzip  -Wl,-rpath,/home/ly/workspaces/im/muduo-im/build/third_party/mymuduo-http libmymuduo.so /usr/lib/x86_64-linux-gnu/libssl.so /usr/lib/x86_64-linux-gnu/libcrypto.so /usr/lib/x86_64-linux-gnu/libz.so -lpthread 

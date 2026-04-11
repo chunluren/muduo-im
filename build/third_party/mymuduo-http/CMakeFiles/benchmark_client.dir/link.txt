@@ -1,1 +1,0 @@
-/usr/bin/c++  -Wall -Wextra -O2 -Wall -Wextra -O2 CMakeFiles/benchmark_client.dir/benchmark/benchmark_client.cpp.o -o benchmark_client  -lpthread 
