@@ -10,6 +10,9 @@
 - 实时私聊 + 群聊（WebSocket）
 - 消息持久化 + 历史查询（MySQL）
 - 在线状态管理
+- 文件传输（HTTP 上传 + WebSocket 通知）
+- 消息撤回（2 分钟内）
+- 已读回执
 - Web 前端（单文件 HTML）
 
 ## 技术栈
@@ -99,6 +102,7 @@ muduo-im/
 | /api/groups/join | POST | 加入群 |
 | /api/groups/members | GET | 群成员 |
 | /api/messages/history | GET | 历史消息 |
+| /api/upload | POST | 文件上传（multipart） |
 
 ### WebSocket 协议
 
@@ -108,6 +112,9 @@ muduo-im/
 ```json
 {"type":"msg", "to":"userId", "content":"hello", "msgId":"uuid"}
 {"type":"group_msg", "to":"groupId", "content":"hello", "msgId":"uuid"}
+{"type":"file_msg", "to":"userId", "url":"/uploads/xxx", "filename":"test.pdf", "fileSize":1024}
+{"type":"recall", "msgId":"uuid"}
+{"type":"read_ack", "to":"senderId", "lastMsgId":"uuid"}
 ```
 
 服务端推送:
@@ -116,4 +123,20 @@ muduo-im/
 {"type":"ack", "msgId":"uuid"}
 {"type":"online", "userId":"xxx"}
 {"type":"offline", "userId":"xxx"}
+{"type":"file_msg", "from":"userId", "url":"/uploads/xxx", "filename":"test.pdf", "fileSize":1024, "msgId":"uuid"}
+{"type":"recall", "msgId":"uuid", "from":"userId"}
+{"type":"read_ack", "from":"readerId", "to":"senderId", "lastMsgId":"uuid"}
+```
+
+## 测试
+
+### 端到端测试
+```bash
+./tests/e2e_test.sh
+```
+
+### WebSocket 压力测试
+```bash
+python3 benchmark/ws_benchmark.py [客户端数] [每客户端消息数]
+python3 benchmark/ws_benchmark.py 10 100   # 10客户端 × 100消息
 ```
