@@ -1,23 +1,44 @@
+#include "server/ChatServer.h"
+#include "net/EventLoop.h"
 #include <iostream>
-#include "common/JWT.h"
-#include "common/Protocol.h"
-#include "server/UserService.h"
-#include "server/OnlineManager.h"
-#include "server/FriendService.h"
-#include "server/GroupService.h"
-#include "server/MessageService.h"
+#include <signal.h>
+
+EventLoop* g_loop = nullptr;
+
+void signalHandler(int) {
+    if (g_loop) g_loop->quit();
+}
 
 int main() {
-    // Quick JWT test
-    JWT jwt("test-secret");
-    auto token = jwt.generate(1);
-    auto userId = jwt.verify(token);
-    std::cout << "JWT test: userId=" << userId << " (expected 1)" << std::endl;
+    signal(SIGINT, signalHandler);
+    signal(SIGTERM, signalHandler);
 
-    // Protocol test
-    std::cout << "MsgId: " << Protocol::generateMsgId() << std::endl;
-    std::cout << "Hash: " << Protocol::hashPassword("test123") << std::endl;
+    MySQLPoolConfig mysqlConfig;
+    mysqlConfig.host = "127.0.0.1";
+    mysqlConfig.port = 3306;
+    mysqlConfig.user = "root";
+    mysqlConfig.password = "";
+    mysqlConfig.database = "muduo_im";
+    mysqlConfig.minSize = 5;
+    mysqlConfig.maxSize = 20;
 
-    std::cout << "All modules compiled successfully!" << std::endl;
+    RedisPoolConfig redisConfig;
+    redisConfig.host = "127.0.0.1";
+    redisConfig.port = 6379;
+    redisConfig.minSize = 3;
+    redisConfig.maxSize = 10;
+
+    EventLoop loop;
+    g_loop = &loop;
+
+    ChatServer server(&loop, 8080, 9090, mysqlConfig, redisConfig, "muduo-im-jwt-secret-key");
+    server.start();
+
+    std::cout << "=== muduo-im ===" << std::endl;
+    std::cout << "HTTP API: http://localhost:8080" << std::endl;
+    std::cout << "WebSocket: ws://localhost:9090/ws?token=xxx" << std::endl;
+
+    loop.loop();
+    std::cout << "Server stopped." << std::endl;
     return 0;
 }
