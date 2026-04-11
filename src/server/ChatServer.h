@@ -1,3 +1,26 @@
+/**
+ * @file ChatServer.h
+ * @brief IM 聊天服务器主类，整合 HTTP REST API 和 WebSocket 实时消息
+ *
+ * 详细说明：
+ * - 双协议架构：HTTP 服务器处理用户注册/登录、好友管理、群组管理、
+ *   历史消息查询和文件上传等 REST API 请求；WebSocket 服务器处理
+ *   实时消息路由，包括单聊、群聊、文件消息、撤回和已读回执
+ * - 所有 HTTP 接口（除注册/登录外）均通过 JWT Bearer Token 鉴权
+ * - WebSocket 连接通过 URL 参数中的 Token 进行握手验证
+ * - 消息流程：客户端发送 → Redis 消息队列（批量刷写 MySQL）→ ACK 发送方 → 转发在线接收方
+ * - Redis 集成：在线状态 TTL、未读消息计数、消息队列批量写入
+ *
+ * @example 使用示例
+ * @code
+ * EventLoop loop;
+ * MySQLPoolConfig mysqlCfg{...};
+ * RedisPoolConfig redisCfg{...};
+ * ChatServer server(&loop, 8080, 9090, mysqlCfg, redisCfg, "my_jwt_secret");
+ * server.start();
+ * loop.loop();
+ * @endcode
+ */
 #pragma once
 
 #include "common/JWT.h"
@@ -22,12 +45,35 @@
 
 using json = nlohmann::json;
 
+/**
+ * @class ChatServer
+ * @brief IM 聊天服务器核心类，双协议架构 + Redis 集成
+ *
+ * 设计思路：
+ * - HTTP 协议：处理无状态的 REST API 请求，包括用户注册/登录、好友增删查、
+ *   群组创建/加入/成员查询、历史消息分页查询、文件上传、未读消息计数等
+ * - WebSocket 协议：处理有状态的实时消息，包括单聊消息路由、群聊消息广播、
+ *   文件消息转发、消息撤回通知、已读回执转发等
+ * - Redis 集成：在线状态带 TTL（支持多实例）、未读消息计数（per user-peer）、
+ *   消息队列（缓冲后批量写入 MySQL，降低数据库压力）
+ */
 class ChatServer {
 public:
+    /**
+     * @brief 构造聊天服务器，初始化双协议服务和所有业务组件
+     *
+     * @param loop      事件循环指针，驱动 HTTP 和 WebSocket 两个服务器的 IO
+     * @param httpPort  HTTP REST API 监听端口（如 8080）
+     * @param wsPort    WebSocket 实时消息监听端口（如 9090）
+     * @param mysqlConfig MySQL 连接池配置（地址、端口、用户名、密码、数据库名、池大小）
+     * @param redisConfig Redis 连接池配置（地址、端口、密码、池大小），用于在线状态管理
+     * @param jwtSecret   JWT 签名密钥，用于用户登录 Token 的生成与验证
+     */
     ChatServer(EventLoop* loop, uint16_t httpPort, uint16_t wsPort,
                const MySQLPoolConfig& mysqlConfig, const RedisPoolConfig& redisConfig,
                const std::string& jwtSecret)
-        : httpServer_(loop, InetAddress(httpPort), "HttpServer")
+        : loop_(loop)
+        , httpServer_(loop, InetAddress(httpPort), "HttpServer")
         , wsServer_(loop, InetAddress(wsPort), "WebSocketServer")
         , mysqlPool_(std::make_shared<MySQLPool>(mysqlConfig))
         , redisPool_(std::make_shared<RedisPool>(redisConfig))
@@ -35,22 +81,47 @@ public:
         , friendService_(mysqlPool_)
         , groupService_(mysqlPool_)
         , messageService_(mysqlPool_)
+        , onlineManager_(redisPool_)
         , jwtSecret_(jwtSecret)
     {
         setupHttpRoutes();
         setupWebSocket();
     }
 
+    /**
+     * @brief 启动聊天服务器，开启 HTTP 和 WebSocket 双协议监听
+     *
+     * 启动顺序：先启用 HTTP 服务器的 CORS 支持（允许前端跨域请求），
+     * 然后分别启动 HTTP 和 WebSocket 服务器开始接受连接。
+     * 同时注册定时任务：每 2 秒批量刷写 Redis 消息队列到 MySQL，
+     * 每 10 秒刷新在线用户的 Redis TTL
+     */
     void start() {
         httpServer_.enableCors();
         httpServer_.start();
         wsServer_.start();
+
+        // Batch flush message queue every 2 seconds
+        loop_->runEvery(2.0, [this]() { flushMessageQueue(); });
+
+        // Refresh online status TTL every 10 seconds
+        loop_->runEvery(10.0, [this]() {
+            auto users = onlineManager_.getOnlineUsers();
+            for (int64_t uid : users) {
+                onlineManager_.refreshOnline(uid);
+            }
+        });
     }
 
 private:
     // ==================== Auth Helper ====================
 
-    /// Extract userId from "Authorization: Bearer xxx" header, returns -1 on failure
+    /**
+     * @brief 从 HTTP 请求的 Authorization 头中提取并验证 JWT Token
+     *
+     * @param req HTTP 请求对象，从中读取 Authorization 头
+     * @return 验证成功返回用户 ID（> 0）；Token 缺失、格式错误或验证失败返回 -1
+     */
     int64_t authFromRequest(const HttpRequest& req) {
         std::string auth = req.getHeader("authorization");
         if (auth.size() <= 7 || auth.substr(0, 7) != "Bearer ") {
@@ -230,7 +301,28 @@ private:
             resp.setJson(result.dump());
         });
 
-        // POST /api/upload — file upload
+        // GET /api/unread -- get unread counts for all friends
+        httpServer_.GET("/api/unread", [this](const HttpRequest& req, HttpResponse& resp) {
+            int64_t userId = authFromRequest(req);
+            if (userId < 0) {
+                resp.setStatusCode(HttpStatusCode::UNAUTHORIZED);
+                resp.setText("unauthorized");
+                return;
+            }
+            // Get unread counts for all friends
+            auto friends = friendService_.getFriends(userId);
+            json result = json::object();
+            for (auto& f : friends) {
+                int64_t fid = f.value("userId", (int64_t)0);
+                int64_t count = getUnread(userId, fid);
+                if (count > 0) {
+                    result[std::to_string(fid)] = count;
+                }
+            }
+            resp.setJson(result.dump());
+        });
+
+        // POST /api/upload -- file upload
         httpServer_.POST("/api/upload", [this](const HttpRequest& req, HttpResponse& resp) {
             int64_t userId = authFromRequest(req);
             if (userId < 0) {
@@ -294,7 +386,12 @@ private:
 
     // ==================== WebSocket ====================
 
-    /// Extract userId from path like "/ws?token=xxx"
+    /**
+     * @brief 从 WebSocket 连接路径中提取 JWT Token 并验证用户身份
+     *
+     * @param path WebSocket 握手请求的 URI 路径（如 "/ws?token=xxx"）
+     * @return 验证成功返回用户 ID（> 0）；Token 缺失或验证失败返回 -1
+     */
     int64_t extractUserIdFromPath(const std::string& path) {
         auto pos = path.find("token=");
         if (pos == std::string::npos) return -1;
@@ -415,8 +512,16 @@ private:
         std::string msgId = Protocol::generateMsgId();
         int64_t timestamp = Protocol::nowMs();
 
-        // Save to DB
-        messageService_.savePrivateMessage(msgId, fromUserId, toUserId, content, timestamp);
+        // Queue message (Redis) or direct save (fallback)
+        if (redisPool_) {
+            json queueItem = {
+                {"_type", "private"}, {"msgId", msgId}, {"from", fromUserId},
+                {"to", toUserId}, {"content", content}, {"timestamp", timestamp}
+            };
+            queueMessage(queueItem.dump());
+        } else {
+            messageService_.savePrivateMessage(msgId, fromUserId, toUserId, content, timestamp);
+        }
 
         // ACK sender
         session->sendText(Protocol::makeAck(msgId));
@@ -425,6 +530,9 @@ private:
         auto recipientSession = onlineManager_.getSession(toUserId);
         if (recipientSession) {
             recipientSession->sendText(Protocol::makePrivateMsg(fromUserId, toUserId, content, msgId));
+        } else {
+            // Recipient offline: increment unread count
+            incrementUnread(toUserId, fromUserId);
         }
     }
 
@@ -446,8 +554,16 @@ private:
         std::string msgId = Protocol::generateMsgId();
         int64_t timestamp = Protocol::nowMs();
 
-        // Save to DB
-        messageService_.saveGroupMessage(msgId, groupId, fromUserId, content, timestamp);
+        // Queue message (Redis) or direct save (fallback)
+        if (redisPool_) {
+            json queueItem = {
+                {"_type", "group"}, {"msgId", msgId}, {"groupId", groupId},
+                {"from", fromUserId}, {"content", content}, {"timestamp", timestamp}
+            };
+            queueMessage(queueItem.dump());
+        } else {
+            messageService_.saveGroupMessage(msgId, groupId, fromUserId, content, timestamp);
+        }
 
         // ACK sender
         session->sendText(Protocol::makeAck(msgId));
@@ -527,6 +643,9 @@ private:
         int64_t toUserId = 0;
         try { toUserId = std::stoll(toStr); } catch (...) {}
 
+        // Clear unread count: the reader (fromUserId) has read messages from toUserId
+        clearUnread(fromUserId, toUserId);
+
         // Forward read receipt to the original sender
         auto senderSession = onlineManager_.getSession(toUserId);
         if (senderSession) {
@@ -534,8 +653,87 @@ private:
         }
     }
 
+    // ==================== Redis Unread Count ====================
+
+    void incrementUnread(int64_t userId, int64_t peerId) {
+        if (!redisPool_) return;
+        auto conn = redisPool_->acquire(1000);
+        if (conn && conn->valid()) {
+            conn->incr("unread:" + std::to_string(userId) + ":" + std::to_string(peerId));
+            redisPool_->release(std::move(conn));
+        }
+    }
+
+    void clearUnread(int64_t userId, int64_t peerId) {
+        if (!redisPool_) return;
+        auto conn = redisPool_->acquire(1000);
+        if (conn && conn->valid()) {
+            conn->del("unread:" + std::to_string(userId) + ":" + std::to_string(peerId));
+            redisPool_->release(std::move(conn));
+        }
+    }
+
+    int64_t getUnread(int64_t userId, int64_t peerId) {
+        if (!redisPool_) return 0;
+        auto conn = redisPool_->acquire(1000);
+        if (conn && conn->valid()) {
+            std::string val = conn->get("unread:" + std::to_string(userId) + ":" + std::to_string(peerId));
+            redisPool_->release(std::move(conn));
+            if (!val.empty()) return std::stoll(val);
+        }
+        return 0;
+    }
+
+    // ==================== Redis Message Queue ====================
+
+    void queueMessage(const std::string& msgJson) {
+        if (!redisPool_) return;
+        auto conn = redisPool_->acquire(1000);
+        if (conn && conn->valid()) {
+            conn->lpush("msg_queue", msgJson);
+            redisPool_->release(std::move(conn));
+        }
+    }
+
+    void flushMessageQueue() {
+        if (!redisPool_) return;
+        auto conn = redisPool_->acquire(3000);
+        if (!conn || !conn->valid()) return;
+
+        // Get up to 100 messages from queue
+        auto messages = conn->lrange("msg_queue", 0, 99);
+        if (messages.empty()) {
+            redisPool_->release(std::move(conn));
+            return;
+        }
+
+        // Trim the queue (remove the messages we just read)
+        conn->ltrim("msg_queue", static_cast<int>(messages.size()), -1);
+        redisPool_->release(std::move(conn));
+
+        // Batch insert to MySQL
+        for (auto& msgStr : messages) {
+            auto j = json::parse(msgStr, nullptr, false);
+            if (j.is_discarded()) continue;
+
+            std::string type = j.value("_type", "");
+            if (type == "private") {
+                messageService_.savePrivateMessage(
+                    j.value("msgId", ""), j.value("from", (int64_t)0),
+                    j.value("to", (int64_t)0), j.value("content", ""),
+                    j.value("timestamp", (int64_t)0));
+            } else if (type == "group") {
+                messageService_.saveGroupMessage(
+                    j.value("msgId", ""), j.value("groupId", (int64_t)0),
+                    j.value("from", (int64_t)0), j.value("content", ""),
+                    j.value("timestamp", (int64_t)0));
+            }
+        }
+    }
+
     // ==================== Members ====================
 
+    EventLoop* loop_;
     HttpServer httpServer_;
     WebSocketServer wsServer_;
 

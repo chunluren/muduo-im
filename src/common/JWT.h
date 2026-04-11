@@ -1,3 +1,18 @@
+/**
+ * @file JWT.h
+ * @brief JWT (JSON Web Token) 认证模块，实现 HS256 签名的 Token 生成与验证
+ *
+ * 本模块提供基于 HMAC-SHA256 签名算法的 JWT 实现，用于 IM 系统的用户身份认证。
+ * JWT 由三段 Base64URL 编码的字符串以 "." 连接而成：header.payload.signature。
+ *
+ * - header:  包含算法类型 (alg: HS256) 和令牌类型 (typ: JWT)
+ * - payload: 包含用户标识 (userId)、签发时间 (iat)、过期时间 (exp)
+ * - signature: 对 "header.payload" 使用 HMAC-SHA256 计算的签名，用于防篡改
+ *
+ * @note 安全说明：这是一个简化的 JWT 实现，使用对称密钥 (HS256) 签名。
+ *       生产环境应考虑使用 RS256 等非对称签名算法，以避免密钥在多服务间共享带来的安全风险。
+ *       此外，当前未实现 token 黑名单/撤销机制，登出后 token 仍在有效期内可用。
+ */
 #pragma once
 
 #include <string>
@@ -7,11 +22,37 @@
 
 using json = nlohmann::json;
 
+/**
+ * @class JWT
+ * @brief JWT 令牌生成与验证器
+ *
+ * 封装了 JWT 的完整生命周期管理：
+ * - 生成：将用户信息编码为 JWT 三段结构（header.payload.signature），使用 HMAC-SHA256 签名
+ * - 验证：拆分 token → 重新计算签名并比对 → 解析 payload → 检查是否过期
+ *
+ * 内部依赖 OpenSSL 的 HMAC 函数进行签名计算，使用自定义的 Base64URL 编解码。
+ */
 class JWT {
 public:
+    /**
+     * @brief 构造 JWT 实例
+     * @param secret HMAC-SHA256 签名所使用的密钥（对称密钥，需妥善保管）
+     */
     explicit JWT(const std::string& secret) : secret_(secret) {}
 
-    /// 生成 token
+    /**
+     * @brief 生成 JWT Token
+     *
+     * 根据用户 ID 和过期时间生成一个完整的 JWT 字符串。
+     * Token 的 payload 部分包含以下字段：
+     * - userId: 用户唯一标识
+     * - iat (Issued At): 签发时间（Unix 时间戳，秒）
+     * - exp (Expiration): 过期时间（Unix 时间戳，秒）
+     *
+     * @param userId 用户 ID，将编码到 token 的 payload 中
+     * @param expireSeconds token 有效期（秒），默认 86400 秒（24 小时）
+     * @return 格式为 "base64url(header).base64url(payload).base64url(signature)" 的 JWT 字符串
+     */
     std::string generate(int64_t userId, int expireSeconds = 86400) {
         int64_t now = std::chrono::duration_cast<std::chrono::seconds>(
             std::chrono::system_clock::now().time_since_epoch()).count();
@@ -31,7 +72,19 @@ public:
         return message + "." + signature;
     }
 
-    /// 验证 token，返回 userId，失败返回 -1
+    /**
+     * @brief 验证 JWT Token 并提取用户 ID
+     *
+     * 验证流程：
+     * 1. 按 "." 拆分 token 为 header、payload、signature 三部分
+     * 2. 对 "header.payload" 重新计算 HMAC-SHA256 签名，与 token 中的 signature 比对
+     * 3. Base64URL 解码 payload，解析 JSON 获取字段
+     * 4. 检查 exp 字段是否已过期（与当前系统时间比较）
+     * 5. 全部通过后返回 payload 中的 userId
+     *
+     * @param token 待验证的 JWT 字符串
+     * @return 验证成功返回 userId (>0)；验证失败（签名不匹配、已过期、格式错误）返回 -1
+     */
     int64_t verify(const std::string& token) {
         // 拆分三部分
         auto dot1 = token.find('.');
@@ -61,6 +114,15 @@ public:
     }
 
 private:
+    /**
+     * @brief 使用 HMAC-SHA256 计算消息认证码
+     *
+     * 调用 OpenSSL 的 HMAC() 函数，以成员变量 secret_ 作为密钥，
+     * 对输入数据计算 HMAC-SHA256 签名。输出为 32 字节的原始二进制数据。
+     *
+     * @param data 待签名的数据（通常为 "base64url(header).base64url(payload)"）
+     * @return 32 字节的 HMAC-SHA256 签名结果（原始二进制）
+     */
     std::string hmacSha256(const std::string& data) {
         unsigned char result[EVP_MAX_MD_SIZE];
         unsigned int len = 0;
@@ -70,6 +132,19 @@ private:
         return std::string(reinterpret_cast<char*>(result), len);
     }
 
+    /**
+     * @brief Base64URL 编码
+     *
+     * 将二进制数据编码为 JWT 专用的 Base64URL 格式：
+     * - 标准 Base64 中的 '+' 替换为 '-'
+     * - 标准 Base64 中的 '/' 替换为 '_'
+     * - 不添加 '=' 填充字符
+     *
+     * 这些替换确保编码结果可以安全地用于 URL 和 HTTP Header 中。
+     *
+     * @param input 待编码的原始数据
+     * @return Base64URL 编码后的字符串（无 padding）
+     */
     static std::string base64UrlEncode(const std::string& input) {
         static const char* chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
         std::string result;
@@ -104,6 +179,17 @@ private:
         return result;
     }
 
+    /**
+     * @brief Base64URL 解码
+     *
+     * Base64URL 编码的反向操作：
+     * 1. 将 '-' 还原为 '+'，'_' 还原为 '/'
+     * 2. 补齐 '=' 填充使长度为 4 的倍数
+     * 3. 按标准 Base64 算法解码为原始二进制数据
+     *
+     * @param input Base64URL 编码的字符串
+     * @return 解码后的原始数据
+     */
     static std::string base64UrlDecode(const std::string& input) {
         std::string s = input;
         for (auto& c : s) {
@@ -139,5 +225,5 @@ private:
         return result;
     }
 
-    std::string secret_;
+    std::string secret_;  ///< HMAC-SHA256 签名密钥（对称密钥）
 };

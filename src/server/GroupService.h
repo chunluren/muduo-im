@@ -1,3 +1,8 @@
+/**
+ * @file GroupService.h
+ * @brief 群组服务，管理群组创建、加入、成员查询
+ */
+
 #pragma once
 
 #include "pool/MySQLPool.h"
@@ -7,10 +12,29 @@
 
 using json = nlohmann::json;
 
+/**
+ * @class GroupService
+ * @brief 群组管理服务
+ *
+ * 群组模型：
+ * - groups 表：存储群组基本信息，包括 owner_id（创建者）和 name（群名称）。
+ * - group_members 表：存储群组成员关系（group_id, user_id）。
+ *
+ * 创建群组时，创建者自动成为群成员。
+ */
 class GroupService {
 public:
     explicit GroupService(std::shared_ptr<MySQLPool> db) : db_(db) {}
 
+    /**
+     * @brief 查询用户所在的所有群组
+     *
+     * 通过 JOIN group_members 和 groups 表，查询指定用户加入的全部群组。
+     * 返回每个群组的 id、name 和 owner_id。
+     *
+     * @param userId 用户 ID
+     * @return json 数组，每个元素包含 groupId、name、ownerId
+     */
     json getUserGroups(int64_t userId) {
         auto conn = db_->acquire(3000);
         if (!conn || !conn->valid()) return json::array();
@@ -34,6 +58,17 @@ public:
         return groups;
     }
 
+    /**
+     * @brief 创建群组
+     *
+     * 创建流程：
+     * 1. INSERT 一条记录到 groups 表，获取自增 groupId
+     * 2. 将创建者自动加入 group_members 表（创建者即为首个群成员）
+     *
+     * @param ownerId 创建者用户 ID
+     * @param name    群组名称（不能为空，通过 conn->escape() 防 SQL 注入）
+     * @return json 包含 success 和 groupId 字段
+     */
     json createGroup(int64_t ownerId, const std::string& name) {
         if (name.empty()) return {{"success", false}, {"message", "name required"}};
 
@@ -53,6 +88,15 @@ public:
         return {{"success", true}, {"groupId", groupId}};
     }
 
+    /**
+     * @brief 加入群组
+     *
+     * 使用 INSERT IGNORE 防止重复加入：如果用户已经是群成员，则静默忽略，不报错。
+     *
+     * @param userId  要加入群组的用户 ID
+     * @param groupId 目标群组 ID
+     * @return json 包含 success 字段
+     */
     json joinGroup(int64_t userId, int64_t groupId) {
         auto conn = db_->acquire(3000);
         if (!conn || !conn->valid()) return {{"success", false}, {"message", "db error"}};
@@ -64,6 +108,15 @@ public:
         return {{"success", true}};
     }
 
+    /**
+     * @brief 获取群组成员详细信息
+     *
+     * 通过 JOIN users 表获取每个群成员的详细信息（id、username、nickname），
+     * 而不仅仅是 user_id。适用于需要展示成员列表的场景。
+     *
+     * @param groupId 群组 ID
+     * @return json 数组，每个元素包含 userId、username、nickname
+     */
     json getMembers(int64_t groupId) {
         auto conn = db_->acquire(3000);
         if (!conn || !conn->valid()) return json::array();
@@ -87,6 +140,15 @@ public:
         return members;
     }
 
+    /**
+     * @brief 获取群组成员 ID 列表（纯 ID，不含详细信息）
+     *
+     * 仅返回 user_id 列表，不 JOIN users 表，用于群消息广播等只需要
+     * 知道"消息该发给谁"而不需要展示用户详细信息的场景，查询更轻量。
+     *
+     * @param groupId 群组 ID
+     * @return 群成员 user_id 的 vector
+     */
     std::vector<int64_t> getMemberIds(int64_t groupId) {
         auto conn = db_->acquire(3000);
         if (!conn || !conn->valid()) return {};
