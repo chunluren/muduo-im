@@ -1,8 +1,6 @@
 #!/bin/bash
 # muduo-im 端到端联调测试
 # 前提: MySQL + Redis 运行中, muduo-im 在 localhost:8080/9090
-set -e
-
 API="http://localhost:8080"
 PASS=0
 FAIL=0
@@ -11,10 +9,10 @@ check() {
     local desc="$1" expected="$2" actual="$3"
     if echo "$actual" | grep -q "$expected"; then
         echo "  ✓ $desc"
-        ((PASS++))
+        PASS=$((PASS + 1))
     else
         echo "  ✗ $desc (expected '$expected', got '$actual')"
-        ((FAIL++))
+        FAIL=$((FAIL + 1))
     fi
 }
 
