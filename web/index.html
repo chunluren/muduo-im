@@ -410,8 +410,8 @@ body {
   gap: 10px;
 }
 
-.chat-input-area input {
-  flex: 1;
+.chat-input-area input[type="text"] {
+  width: 100%;
   padding: 10px 14px;
   border: 1px solid #ddd;
   border-radius: 20px;
@@ -420,7 +420,7 @@ body {
   transition: border-color 0.3s;
 }
 
-.chat-input-area input:focus {
+.chat-input-area input[type="text"]:focus {
   border-color: #4A90D9;
 }
 
@@ -854,6 +854,207 @@ body {
   color: #fff;
   border-color: #4A90D9;
 }
+
+/* Clickable name links */
+.friend-name-link {
+  cursor: pointer;
+  transition: color 0.2s;
+}
+
+.friend-name-link:hover {
+  color: #4A90D9;
+  text-decoration: underline;
+}
+
+/* Group action buttons */
+.group-actions {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.group-actions .btn-group-action {
+  padding: 2px 6px;
+  font-size: 11px;
+  border: 1px solid #ddd;
+  border-radius: 3px;
+  cursor: pointer;
+  background: none;
+  transition: all 0.2s;
+}
+
+.group-actions .btn-group-leave {
+  color: #e67e22;
+  border-color: #e67e22;
+}
+
+.group-actions .btn-group-leave:hover {
+  background: #e67e22;
+  color: #fff;
+}
+
+.group-actions .btn-group-delete {
+  color: #e74c3c;
+  border-color: #e74c3c;
+}
+
+.group-actions .btn-group-delete:hover {
+  background: #e74c3c;
+  color: #fff;
+}
+
+/* User profile popup */
+.user-profile-popup {
+  position: fixed;
+  z-index: 1001;
+  background: #fff;
+  border-radius: 10px;
+  padding: 20px;
+  width: 280px;
+  box-shadow: 0 8px 30px rgba(0,0,0,0.2);
+  animation: popupFadeIn 0.15s ease-out;
+}
+
+@keyframes popupFadeIn {
+  from { opacity: 0; transform: scale(0.95); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+.user-profile-popup .popup-close {
+  position: absolute;
+  top: 8px;
+  right: 12px;
+  background: none;
+  border: none;
+  font-size: 18px;
+  cursor: pointer;
+  color: #999;
+}
+
+.user-profile-popup .popup-close:hover {
+  color: #333;
+}
+
+.user-profile-popup .popup-avatar {
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  background: #4A90D9;
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 24px;
+  font-weight: 600;
+  margin: 0 auto 12px;
+  overflow: hidden;
+}
+
+.user-profile-popup .popup-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.user-profile-popup .popup-name {
+  text-align: center;
+  font-size: 16px;
+  font-weight: 600;
+  color: #333;
+  margin-bottom: 4px;
+}
+
+.user-profile-popup .popup-username {
+  text-align: center;
+  font-size: 13px;
+  color: #999;
+  margin-bottom: 8px;
+}
+
+/* Character counter */
+.chat-input-wrapper {
+  flex: 1;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+}
+
+.char-counter {
+  font-size: 11px;
+  color: #aaa;
+  text-align: right;
+  padding: 2px 4px 0;
+  height: 16px;
+}
+
+.char-counter.warn {
+  color: #e67e22;
+}
+
+.char-counter.danger {
+  color: #e74c3c;
+  font-weight: 600;
+}
+
+/* Typing indicator */
+.typing-indicator {
+  padding: 0 20px;
+  font-size: 12px;
+  color: #999;
+  font-style: italic;
+  height: 20px;
+  line-height: 20px;
+  background: #fff;
+  display: none;
+}
+
+.typing-indicator.show {
+  display: block;
+}
+
+/* Password change section in profile modal */
+.profile-section-divider {
+  border: none;
+  border-top: 1px solid #eee;
+  margin: 20px 0 16px;
+}
+
+.profile-section-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: #333;
+  margin-bottom: 12px;
+}
+
+.btn-danger {
+  padding: 8px 18px;
+  border: none;
+  border-radius: 6px;
+  font-size: 14px;
+  cursor: pointer;
+  background: #e74c3c;
+  color: #fff;
+  transition: background 0.3s;
+  width: 100%;
+  margin-top: 8px;
+}
+
+.btn-danger:hover {
+  background: #c0392b;
+}
+
+/* Loading indicator for history pagination */
+.history-loading {
+  text-align: center;
+  padding: 10px;
+  color: #999;
+  font-size: 12px;
+  display: none;
+}
+
+.history-loading.show {
+  display: block;
+}
 </style>
 </head>
 <body>
@@ -964,13 +1165,18 @@ body {
       </span>
       <button id="deleteFriendBtn" class="delete-friend-btn" style="display:none;" onclick="doDeleteFriend()">删除好友</button>
     </div>
+    <div class="typing-indicator" id="typingIndicator"></div>
     <div class="chat-messages" id="chatMessages">
+      <div class="history-loading" id="historyLoading">加载更多消息...</div>
       <div class="chat-empty" id="chatEmpty">选择一个好友或群组开始聊天</div>
     </div>
     <div class="chat-input-area">
       <input type="file" id="fileInput" style="display:none" onchange="handleFileSelected(event)">
       <button class="btn-file" id="btnFile" disabled onclick="document.getElementById('fileInput').click()" title="发送文件">&#x1F4CE;</button>
-      <input type="text" id="msgInput" placeholder="输入消息..." disabled onkeydown="if(event.key==='Enter')sendMessage()">
+      <div class="chat-input-wrapper">
+        <input type="text" id="msgInput" placeholder="输入消息..." maxlength="10000" disabled onkeydown="if(event.key==='Enter')sendMessage()" oninput="onMsgInput()">
+        <div class="char-counter" id="charCounter"></div>
+      </div>
       <button class="btn-send" id="btnSend" disabled onclick="sendMessage()">发送</button>
     </div>
   </div>
@@ -996,7 +1202,34 @@ body {
       <button class="btn-modal cancel" onclick="closeProfileModal()">取消</button>
       <button class="btn-modal primary" onclick="saveProfile()">保存</button>
     </div>
+
+    <hr class="profile-section-divider">
+    <div class="profile-section-title">修改密码</div>
+    <div class="form-group">
+      <label>当前密码</label>
+      <input type="password" id="profileOldPassword" placeholder="输入当前密码" autocomplete="current-password">
+    </div>
+    <div class="form-group">
+      <label>新密码</label>
+      <input type="password" id="profileNewPassword" placeholder="输入新密码" autocomplete="new-password">
+    </div>
+    <div class="modal-actions">
+      <button class="btn-modal primary" onclick="doChangePassword()">修改密码</button>
+    </div>
+
+    <hr class="profile-section-divider">
+    <div class="profile-section-title">注销账号</div>
+    <p style="font-size:13px;color:#999;margin-bottom:10px;">注销后账号将被永久删除，无法恢复。</p>
+    <button class="btn-danger" onclick="doDeleteAccount()">注销账号</button>
   </div>
+</div>
+
+<!-- User Profile Popup (for viewing other users) -->
+<div id="userProfilePopup" class="user-profile-popup" style="display:none;">
+  <button class="popup-close" onclick="closeUserProfilePopup()">&times;</button>
+  <div class="popup-avatar" id="popupAvatar"></div>
+  <div class="popup-name" id="popupNickname"></div>
+  <div class="popup-username" id="popupUsername"></div>
 </div>
 
 <!-- Search User Modal -->
@@ -1016,8 +1249,13 @@ body {
 
 <script>
 // ===== Config =====
+const CONFIG = {
+  wsPort: 9090,           // WebSocket server port (change if your server uses a different port)
+  typingTimeout: 3000,    // How long to show typing indicator (ms)
+  recallTimeLimit: 2 * 60 * 1000, // 2 minutes recall limit
+};
 const API_BASE = '';
-const WS_PORT = 9090;
+const WS_PORT = CONFIG.wsPort;
 
 // ===== State =====
 let token = localStorage.getItem('im_token') || '';
@@ -1034,6 +1272,10 @@ let unreadCounts = {}; // key: 'friend_id' or 'group_id', value: number
 let messageCache = {}; // key: 'friend_id' or 'group_id', value: [messages]
 let friendRequests = []; // [{requestId, fromUserId, username, nickname, avatar, createdAt}]
 let searchDebounceTimer = null;
+let typingDebounceTimer = null;
+let typingDisplayTimer = null;
+let isLoadingHistory = false;
+let historyFullyLoaded = {}; // key: 'friend_id' or 'group_id', true if no more old messages
 
 // ===== UUID =====
 function generateUUID() {
@@ -1150,6 +1392,7 @@ function doLogout() {
   onlineUsers.clear();
   unreadCounts = {};
   messageCache = {};
+  historyFullyLoaded = {};
   showAuthPage();
 }
 
@@ -1162,10 +1405,11 @@ function showAuthPage() {
 function showChatPage() {
   document.getElementById('authPage').style.display = 'none';
   document.getElementById('chatPage').style.display = 'flex';
-  document.getElementById('userNickname').textContent = nickname;
+  document.getElementById('userNickname').textContent = escapeHtml(nickname);
   loadFriends();
   loadGroups();
   loadFriendRequests();
+  loadUnreadCounts();
   connectWebSocket();
 }
 
@@ -1189,17 +1433,26 @@ function renderFriendList() {
   friends.forEach(f => {
     const li = document.createElement('li');
     li.className = 'contact-item' + (currentChat && currentChat.type === 'friend' && currentChat.id === f.userId ? ' active' : '');
+    li.setAttribute('data-friend-id', f.userId);
     const key = 'friend_' + f.userId;
     const unread = unreadCounts[key] || 0;
     const isOnline = onlineUsers.has(String(f.userId));
     li.innerHTML = `
       <span class="contact-name">
-        <span class="online-dot ${isOnline ? 'online' : ''}"></span>
-        ${escapeHtml(f.nickname || f.username)}
+        <span class="online-dot ${isOnline ? 'online' : ''}" data-online-dot="${f.userId}"></span>
+        <span class="friend-name-link" data-user-id="${f.userId}">${escapeHtml(f.nickname || f.username)}</span>
       </span>
-      <span class="unread-badge ${unread > 0 ? 'show' : ''}">${unread}</span>
+      <span class="unread-badge ${unread > 0 ? 'show' : ''}" data-unread-badge="${f.userId}">${unread}</span>
     `;
-    li.onclick = () => selectChat('friend', f.userId, f.nickname || f.username);
+    li.onclick = (e) => {
+      // If clicking the friend name link, show profile popup
+      if (e.target.classList.contains('friend-name-link')) {
+        e.stopPropagation();
+        showUserProfile(f.userId, e);
+        return;
+      }
+      selectChat('friend', f.userId, f.nickname || f.username);
+    };
     list.appendChild(li);
   });
 }
@@ -1406,13 +1659,30 @@ function renderGroupList() {
   groups.forEach(g => {
     const li = document.createElement('li');
     li.className = 'contact-item' + (currentChat && currentChat.type === 'group' && currentChat.id === g.groupId ? ' active' : '');
+    li.setAttribute('data-group-id', g.groupId);
     const key = 'group_' + g.groupId;
     const unread = unreadCounts[key] || 0;
+    const isOwner = g.ownerId === userId || g.ownerId === String(userId);
     li.innerHTML = `
       <span class="contact-name">${escapeHtml(g.name)}</span>
-      <span class="unread-badge ${unread > 0 ? 'show' : ''}">${unread}</span>
+      <span class="group-actions">
+        <span class="unread-badge ${unread > 0 ? 'show' : ''}">${unread}</span>
+        <button class="btn-group-action ${isOwner ? 'btn-group-delete' : 'btn-group-leave'}">${isOwner ? '解散' : '退出'}</button>
+      </span>
     `;
-    li.onclick = () => selectChat('group', g.groupId, g.name);
+    const actionBtn = li.querySelector('.btn-group-action');
+    actionBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (isOwner) {
+        doDeleteGroup(g.groupId, g.name);
+      } else {
+        doLeaveGroup(g.groupId, g.name);
+      }
+    });
+    li.onclick = (e) => {
+      if (e.target.classList.contains('btn-group-action')) return;
+      selectChat('group', g.groupId, g.name);
+    };
     list.appendChild(li);
   });
 }
@@ -1458,6 +1728,12 @@ async function selectChat(type, id, name) {
   renderFriendList();
   renderGroupList();
   renderChatArea();
+
+  // Reset pagination state
+  historyFullyLoaded[key] = false;
+
+  // Hide typing indicator when switching chats
+  hideTypingIndicator();
 
   // Load history
   try {
@@ -1561,6 +1837,7 @@ function appendMessageToDOM(msg) {
   }
 
   let senderName = '';
+  let senderUserId = msg.from;
   if (!isOwn) {
     if (currentChat && currentChat.type === 'group') {
       const friend = friends.find(f => f.userId == msg.from);
@@ -1608,9 +1885,13 @@ function appendMessageToDOM(msg) {
     readStatus = `<div class="message-read-status ${isRead ? 'read' : ''}">${isRead ? '已读' : '未读'}</div>`;
   }
 
+  const senderHtml = !isOwn && senderName
+    ? '<div class="message-sender"><span class="friend-name-link" data-user-id="' + senderUserId + '" style="cursor:pointer;" onclick="showUserProfile(' + senderUserId + ', event)">' + escapeHtml(senderName) + '</span></div>'
+    : '';
+
   if (isOwn && recallBtn) {
     div.innerHTML = `
-      ${!isOwn && senderName ? '<div class="message-sender">' + escapeHtml(senderName) + '</div>' : ''}
+      ${senderHtml}
       <div class="message-bubble-wrapper">
         ${recallBtn}
         <div class="message-bubble">${bubbleContent}</div>
@@ -1620,7 +1901,7 @@ function appendMessageToDOM(msg) {
     `;
   } else {
     div.innerHTML = `
-      ${!isOwn && senderName ? '<div class="message-sender">' + escapeHtml(senderName) + '</div>' : ''}
+      ${senderHtml}
       <div class="message-bubble">${bubbleContent}</div>
       <div class="message-time">${formatTime(msg.timestamp)}</div>
       ${readStatus}
@@ -1669,6 +1950,7 @@ function sendMessage() {
 
   input.value = '';
   input.focus();
+  updateCharCounter();
 }
 
 // ===== WebSocket =====
@@ -1773,12 +2055,23 @@ function handleWsMessage(data) {
     }
     case 'online': {
       onlineUsers.add(String(data.userId));
-      renderFriendList();
+      // Real-time update: toggle the dot without full re-render
+      const onlineDot = document.querySelector('[data-online-dot="' + data.userId + '"]');
+      if (onlineDot) {
+        onlineDot.classList.add('online');
+      } else {
+        renderFriendList(); // fallback if element not found
+      }
       break;
     }
     case 'offline': {
       onlineUsers.delete(String(data.userId));
-      renderFriendList();
+      const offlineDot = document.querySelector('[data-online-dot="' + data.userId + '"]');
+      if (offlineDot) {
+        offlineDot.classList.remove('online');
+      } else {
+        renderFriendList();
+      }
       break;
     }
     case 'file_msg': {
@@ -1865,6 +2158,14 @@ function handleWsMessage(data) {
     case 'friend_request': {
       // Someone sent us a friend request — refresh the list
       loadFriendRequests();
+      break;
+    }
+    case 'typing': {
+      // Someone is typing to us
+      const typingFromId = data.from;
+      if (currentChat && currentChat.type === 'friend' && currentChat.id == typingFromId) {
+        showTypingIndicator(currentChat.name);
+      }
       break;
     }
     case 'error': {
@@ -1981,15 +2282,298 @@ function formatFileSize(bytes) {
   return size.toFixed(i === 0 ? 0 : 1) + ' ' + units[i];
 }
 
+// ===== Group Leave / Delete =====
+async function doLeaveGroup(groupId, groupName) {
+  if (!confirm('确认退出群组 "' + groupName + '"?')) return;
+  try {
+    await api('POST', '/api/groups/leave', { groupId });
+    if (currentChat && currentChat.type === 'group' && currentChat.id === groupId) {
+      currentChat = null;
+      renderChatArea();
+    }
+    loadGroups();
+  } catch (e) {
+    alert('退出群组失败: ' + e.message);
+  }
+}
+
+async function doDeleteGroup(groupId, groupName) {
+  if (!confirm('确认解散群组 "' + groupName + '"? 此操作不可恢复。')) return;
+  try {
+    await api('POST', '/api/groups/delete', { groupId });
+    if (currentChat && currentChat.type === 'group' && currentChat.id === groupId) {
+      currentChat = null;
+      renderChatArea();
+    }
+    loadGroups();
+  } catch (e) {
+    alert('解散群组失败: ' + e.message);
+  }
+}
+
+// ===== View User Profile Popup =====
+async function showUserProfile(targetUserId, event) {
+  try {
+    const data = await api('GET', '/api/user/info?userId=' + targetUserId);
+    if (!data.success && !data.username) return;
+
+    const popup = document.getElementById('userProfilePopup');
+    const avatarEl = document.getElementById('popupAvatar');
+    const nicknameEl = document.getElementById('popupNickname');
+    const usernameEl = document.getElementById('popupUsername');
+
+    const uname = data.username || '';
+    const unick = data.nickname || uname;
+    const uavatar = data.avatar || '';
+
+    nicknameEl.textContent = unick;
+    usernameEl.textContent = '@' + uname;
+
+    if (uavatar) {
+      avatarEl.innerHTML = '<img src="' + escapeHtml(uavatar) + '" alt="avatar">';
+    } else {
+      avatarEl.textContent = (unick || uname || '?').charAt(0).toUpperCase();
+    }
+
+    // Position popup near the click
+    popup.style.display = 'block';
+    const rect = popup.getBoundingClientRect();
+    let top = (event.clientY || 200) - 20;
+    let left = (event.clientX || 300) + 10;
+    // Keep within viewport
+    if (top + rect.height > window.innerHeight) top = window.innerHeight - rect.height - 10;
+    if (left + rect.width > window.innerWidth) left = event.clientX - rect.width - 10;
+    if (top < 10) top = 10;
+    if (left < 10) left = 10;
+    popup.style.top = top + 'px';
+    popup.style.left = left + 'px';
+
+    // Close when clicking outside
+    setTimeout(() => {
+      document.addEventListener('click', closeUserProfileOnOutsideClick);
+    }, 0);
+  } catch (e) {
+    console.error('获取用户信息失败:', e);
+  }
+}
+
+function closeUserProfilePopup() {
+  document.getElementById('userProfilePopup').style.display = 'none';
+  document.removeEventListener('click', closeUserProfileOnOutsideClick);
+}
+
+function closeUserProfileOnOutsideClick(e) {
+  const popup = document.getElementById('userProfilePopup');
+  if (!popup.contains(e.target) && !e.target.classList.contains('friend-name-link')) {
+    closeUserProfilePopup();
+  }
+}
+
+// ===== Character Counter =====
+function onMsgInput() {
+  updateCharCounter();
+  handleTypingEvent();
+}
+
+function updateCharCounter() {
+  const input = document.getElementById('msgInput');
+  const counter = document.getElementById('charCounter');
+  const len = input.value.length;
+  const max = 10000;
+  if (len === 0) {
+    counter.textContent = '';
+    counter.className = 'char-counter';
+  } else {
+    counter.textContent = len + ' / ' + max;
+    if (len > max * 0.9) {
+      counter.className = 'char-counter danger';
+    } else if (len > max * 0.75) {
+      counter.className = 'char-counter warn';
+    } else {
+      counter.className = 'char-counter';
+    }
+  }
+}
+
+// ===== Typing Indicator =====
+function handleTypingEvent() {
+  if (!currentChat || !ws || ws.readyState !== WebSocket.OPEN) return;
+  if (currentChat.type !== 'friend') return;
+  if (typingDebounceTimer) clearTimeout(typingDebounceTimer);
+  typingDebounceTimer = setTimeout(() => {
+    if (ws && ws.readyState === WebSocket.OPEN && currentChat) {
+      ws.send(JSON.stringify({ type: 'typing', to: String(currentChat.id) }));
+    }
+  }, 300);
+}
+
+function showTypingIndicator(name) {
+  const el = document.getElementById('typingIndicator');
+  el.textContent = name + ' 正在输入...';
+  el.classList.add('show');
+  if (typingDisplayTimer) clearTimeout(typingDisplayTimer);
+  typingDisplayTimer = setTimeout(() => {
+    hideTypingIndicator();
+  }, CONFIG.typingTimeout);
+}
+
+function hideTypingIndicator() {
+  const el = document.getElementById('typingIndicator');
+  el.classList.remove('show');
+  el.textContent = '';
+  if (typingDisplayTimer) { clearTimeout(typingDisplayTimer); typingDisplayTimer = null; }
+}
+
+// ===== Unread Counts on Startup =====
+async function loadUnreadCounts() {
+  try {
+    const data = await api('GET', '/api/unread');
+    if (data && typeof data === 'object') {
+      // data might be { success: true, unreads: { friend_1: 3, group_2: 5 } }
+      // or it might be the unreads object directly
+      const unreads = data.unreads || data;
+      if (typeof unreads === 'object') {
+        for (const key in unreads) {
+          if (key === 'success' || key === 'message') continue;
+          const count = parseInt(unreads[key]) || 0;
+          if (count > 0) {
+            unreadCounts[key] = count;
+          }
+        }
+        renderFriendList();
+        renderGroupList();
+      }
+    }
+  } catch (e) {
+    console.error('加载未读计数失败:', e);
+  }
+}
+
+// ===== History Message Pagination =====
+function setupScrollPagination() {
+  const container = document.getElementById('chatMessages');
+  container.addEventListener('scroll', onChatScroll);
+}
+
+async function onChatScroll() {
+  const container = document.getElementById('chatMessages');
+  if (container.scrollTop > 50) return; // Only trigger near top
+  if (!currentChat) return;
+  if (isLoadingHistory) return;
+  const key = currentChat.type + '_' + currentChat.id;
+  if (historyFullyLoaded[key]) return;
+
+  const messages = messageCache[key] || [];
+  if (messages.length === 0) return;
+
+  // Get the oldest message timestamp
+  const oldest = messages[0];
+  if (!oldest || !oldest.timestamp) return;
+
+  isLoadingHistory = true;
+  const loadingEl = document.getElementById('historyLoading');
+  loadingEl.classList.add('show');
+
+  try {
+    const param = currentChat.type === 'friend'
+      ? 'peerId=' + currentChat.id
+      : 'groupId=' + currentChat.id;
+    const beforeTs = typeof oldest.timestamp === 'number' ? oldest.timestamp : parseInt(oldest.timestamp);
+    const olderMessages = await api('GET', '/api/messages/history?' + param + '&before=' + beforeTs);
+
+    if (!olderMessages || olderMessages.length === 0) {
+      historyFullyLoaded[key] = true;
+    } else {
+      const parsed = olderMessages.map(m => ({
+        msgId: m.msgId,
+        from: m.from,
+        to: m.to,
+        content: m.content,
+        fileUrl: m.fileUrl || m.url,
+        filename: m.filename,
+        fileSize: m.fileSize,
+        recalled: m.recalled || false,
+        read: m.read || false,
+        timestamp: m.timestamp
+      }));
+
+      // Prepend to cache
+      messageCache[key] = [...parsed, ...messages];
+
+      // Remember scroll position, re-render, restore scroll
+      const prevHeight = container.scrollHeight;
+      renderMessages();
+      const newHeight = container.scrollHeight;
+      container.scrollTop = newHeight - prevHeight;
+
+      if (parsed.length < 20) {
+        historyFullyLoaded[key] = true;
+      }
+    }
+  } catch (e) {
+    console.error('加载更多消息失败:', e);
+  } finally {
+    isLoadingHistory = false;
+    loadingEl.classList.remove('show');
+  }
+}
+
+// ===== Password Change =====
+async function doChangePassword() {
+  const oldPwd = document.getElementById('profileOldPassword').value.trim();
+  const newPwd = document.getElementById('profileNewPassword').value.trim();
+  if (!oldPwd || !newPwd) {
+    alert('请填写当前密码和新密码');
+    return;
+  }
+  if (newPwd.length < 6) {
+    alert('新密码至少 6 个字符');
+    return;
+  }
+  try {
+    const data = await api('POST', '/api/user/password', { oldPassword: oldPwd, newPassword: newPwd });
+    if (data.success) {
+      alert('密码修改成功');
+      document.getElementById('profileOldPassword').value = '';
+      document.getElementById('profileNewPassword').value = '';
+    } else {
+      alert(data.message || '密码修改失败');
+    }
+  } catch (e) {
+    alert('密码修改失败: ' + e.message);
+  }
+}
+
+// ===== Account Delete =====
+async function doDeleteAccount() {
+  const pwd = prompt('确认注销账号？请输入密码以确认：');
+  if (pwd === null) return; // cancelled
+  if (!pwd.trim()) { alert('请输入密码'); return; }
+  if (!confirm('此操作将永久删除您的账号，确认继续？')) return;
+  try {
+    const data = await api('POST', '/api/user/delete', { password: pwd.trim() });
+    if (data.success) {
+      alert('账号已注销');
+      doLogout();
+    } else {
+      alert(data.message || '注销失败');
+    }
+  } catch (e) {
+    alert('注销失败: ' + e.message);
+  }
+}
+
 // ===== Utility =====
 function escapeHtml(text) {
+  if (text === null || text === undefined) return '';
   const div = document.createElement('div');
-  div.textContent = text;
+  div.textContent = String(text);
   return div.innerHTML;
 }
 
 // ===== Init =====
 (function init() {
+  setupScrollPagination();
   if (token && userId) {
     showChatPage();
   } else {

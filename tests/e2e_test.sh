@@ -90,6 +90,66 @@ U1=$(curl -s $API/api/friends)
 check "无 token 返回 401" "unauthorized" "$U1"
 
 echo ""
+echo "--- 6. 用户资料 ---"
+UP=$(curl -s -H "$AUTH1" $API/api/user/profile)
+check "获取个人资料" "testuser1" "$UP"
+
+UU=$(curl -s -X PUT $API/api/user/profile -H "$AUTH1" -H "Content-Type: application/json" \
+    -d '{"nickname":"NewNick1"}')
+check "修改昵称" "success" "$UU"
+
+echo ""
+echo "--- 7. 好友申请流程 ---"
+# 先删掉之前直接添加的好友关系，测试新流程
+curl -s -X POST $API/api/friends/delete -H "$AUTH1" -H "Content-Type: application/json" \
+    -d "{\"friendId\":$USERID2}" > /dev/null 2>&1
+
+FR=$(curl -s -X POST $API/api/friends/request -H "$AUTH1" -H "Content-Type: application/json" \
+    -d "{\"toUserId\":$USERID2}")
+check "发送好友申请" "request sent" "$FR"
+
+FL=$(curl -s -H "$AUTH2" $API/api/friends/requests)
+check "收到好友申请" "testuser1" "$FL"
+
+# 获取 requestId
+REQID=$(echo "$FL" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d[0]['requestId'] if d else '')" 2>/dev/null)
+
+FH=$(curl -s -X POST $API/api/friends/handle -H "$AUTH2" -H "Content-Type: application/json" \
+    -d "{\"requestId\":$REQID,\"accept\":true}")
+check "同意好友申请" "success" "$FH"
+
+FL2=$(curl -s -H "$AUTH1" $API/api/friends)
+check "好友列表已更新" "testuser2" "$FL2"
+
+echo ""
+echo "--- 8. 用户搜索 ---"
+SR=$(curl -s -H "$AUTH1" "$API/api/user/search?keyword=testuser")
+check "搜索用户" "testuser2" "$SR"
+
+echo ""
+echo "--- 9. 群组退出 ---"
+GL=$(curl -s -X POST $API/api/groups/leave -H "$AUTH2" -H "Content-Type: application/json" \
+    -d "{\"groupId\":$GROUPID}")
+check "退出群组" "success" "$GL"
+
+echo ""
+echo "--- 10. 修改密码 ---"
+PW=$(curl -s -X POST $API/api/user/password -H "$AUTH1" -H "Content-Type: application/json" \
+    -d '{"oldPassword":"pass123","newPassword":"newpass123"}')
+check "修改密码" "success" "$PW"
+
+# 用新密码重新登录
+L4=$(curl -s -X POST $API/api/login -H "Content-Type: application/json" \
+    -d '{"username":"testuser1","password":"newpass123"}')
+check "新密码登录" "token" "$L4"
+
+# 改回去
+curl -s -X POST $API/api/user/password \
+    -H "Authorization: Bearer $(echo "$L4" | python3 -c "import sys,json; print(json.load(sys.stdin).get('token',''))" 2>/dev/null)" \
+    -H "Content-Type: application/json" \
+    -d '{"oldPassword":"newpass123","newPassword":"pass123"}' > /dev/null 2>&1
+
+echo ""
 echo "========================================"
 echo "  结果: $PASS 通过, $FAIL 失败"
 echo "========================================"

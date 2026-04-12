@@ -240,6 +240,84 @@ public:
         return {{"success", true}, {"users", users}};
     }
 
+    /// 查看其他用户资料（公开信息）
+    json getPublicProfile(int64_t targetUserId) {
+        auto conn = db_->acquire(3000);
+        if (!conn || !conn->valid()) return {{"success", false}, {"message", "db error"}};
+
+        auto result = conn->query("SELECT id, username, nickname, avatar FROM users WHERE id=" + std::to_string(targetUserId));
+        db_->release(std::move(conn));
+
+        if (!result || mysql_num_rows(result.get()) == 0) {
+            return {{"success", false}, {"message", "user not found"}};
+        }
+
+        MYSQL_ROW row = mysql_fetch_row(result.get());
+        return {
+            {"success", true},
+            {"userId", std::stoll(row[0])},
+            {"username", row[1]},
+            {"nickname", row[2] ? row[2] : ""},
+            {"avatar", row[3] ? row[3] : ""}
+        };
+    }
+
+    /// 修改密码
+    json changePassword(int64_t userId, const std::string& oldPassword, const std::string& newPassword) {
+        if (newPassword.empty() || newPassword.size() < 6) {
+            return {{"success", false}, {"message", "new password must be at least 6 characters"}};
+        }
+
+        auto conn = db_->acquire(3000);
+        if (!conn || !conn->valid()) return {{"success", false}, {"message", "db error"}};
+
+        // Verify old password
+        auto result = conn->query("SELECT password FROM users WHERE id=" + std::to_string(userId));
+        if (!result || mysql_num_rows(result.get()) == 0) {
+            db_->release(std::move(conn));
+            return {{"success", false}, {"message", "user not found"}};
+        }
+
+        MYSQL_ROW row = mysql_fetch_row(result.get());
+        if (!Protocol::verifyPassword(oldPassword, row[0])) {
+            db_->release(std::move(conn));
+            return {{"success", false}, {"message", "wrong old password"}};
+        }
+
+        std::string newHash = Protocol::hashPassword(newPassword);
+        conn->execute("UPDATE users SET password='" + newHash + "' WHERE id=" + std::to_string(userId));
+        db_->release(std::move(conn));
+        return {{"success", true}};
+    }
+
+    /// 注销账号
+    json deleteAccount(int64_t userId, const std::string& password) {
+        auto conn = db_->acquire(3000);
+        if (!conn || !conn->valid()) return {{"success", false}, {"message", "db error"}};
+
+        // Verify password
+        auto result = conn->query("SELECT password FROM users WHERE id=" + std::to_string(userId));
+        if (!result || mysql_num_rows(result.get()) == 0) {
+            db_->release(std::move(conn));
+            return {{"success", false}, {"message", "user not found"}};
+        }
+
+        MYSQL_ROW row = mysql_fetch_row(result.get());
+        if (!Protocol::verifyPassword(password, row[0])) {
+            db_->release(std::move(conn));
+            return {{"success", false}, {"message", "wrong password"}};
+        }
+
+        // Delete user and related data
+        std::string uid = std::to_string(userId);
+        conn->execute("DELETE FROM friends WHERE user_id=" + uid + " OR friend_id=" + uid);
+        conn->execute("DELETE FROM group_members WHERE user_id=" + uid);
+        conn->execute("DELETE FROM friend_requests WHERE from_user=" + uid + " OR to_user=" + uid);
+        conn->execute("DELETE FROM users WHERE id=" + uid);
+        db_->release(std::move(conn));
+        return {{"success", true}};
+    }
+
     /** @brief 获取内部 JWT 实例的引用，供外部直接使用 JWT 功能 */
     JWT& jwt() { return jwt_; }
 

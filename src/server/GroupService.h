@@ -166,6 +166,51 @@ public:
         return ids;
     }
 
+    /// 退出群组
+    json leaveGroup(int64_t userId, int64_t groupId) {
+        auto conn = db_->acquire(3000);
+        if (!conn || !conn->valid()) return {{"success", false}, {"message", "db error"}};
+
+        // 群主不能退出，只能解散
+        auto result = conn->query("SELECT owner_id FROM `groups` WHERE id=" + std::to_string(groupId));
+        if (result) {
+            MYSQL_ROW row = mysql_fetch_row(result.get());
+            if (row && std::stoll(row[0]) == userId) {
+                db_->release(std::move(conn));
+                return {{"success", false}, {"message", "owner cannot leave, use delete instead"}};
+            }
+        }
+
+        conn->execute("DELETE FROM group_members WHERE group_id=" + std::to_string(groupId)
+            + " AND user_id=" + std::to_string(userId));
+        db_->release(std::move(conn));
+        return {{"success", true}};
+    }
+
+    /// 解散群组（仅群主）
+    json deleteGroup(int64_t userId, int64_t groupId) {
+        auto conn = db_->acquire(3000);
+        if (!conn || !conn->valid()) return {{"success", false}, {"message", "db error"}};
+
+        // 验证群主
+        auto result = conn->query("SELECT owner_id FROM `groups` WHERE id=" + std::to_string(groupId));
+        if (!result || mysql_num_rows(result.get()) == 0) {
+            db_->release(std::move(conn));
+            return {{"success", false}, {"message", "group not found"}};
+        }
+        MYSQL_ROW row = mysql_fetch_row(result.get());
+        if (std::stoll(row[0]) != userId) {
+            db_->release(std::move(conn));
+            return {{"success", false}, {"message", "only owner can delete group"}};
+        }
+
+        // 删除群成员 + 群组
+        conn->execute("DELETE FROM group_members WHERE group_id=" + std::to_string(groupId));
+        conn->execute("DELETE FROM `groups` WHERE id=" + std::to_string(groupId));
+        db_->release(std::move(conn));
+        return {{"success", true}};
+    }
+
 private:
     std::shared_ptr<MySQLPool> db_;
 };

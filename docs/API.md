@@ -353,3 +353,40 @@ ws://localhost:9090/ws?token=<JWT_TOKEN>
 ```
 
 可能的错误信息: `invalid JSON`, `not authenticated`, `missing 'to' or 'content'`, `invalid 'to'`, `invalid group id`, `missing 'to' or 'url'`, `missing msgId`, `recall failed (timeout or not your message)`, `unknown message type`
+
+---
+
+### POST /api/groups/leave
+退出群组（群主不可退出，需使用解散）
+
+**Request:** `{"groupId": 1}`
+**Response:** `{"success": true}`
+
+### POST /api/groups/delete
+解散群组（仅群主）
+
+**Request:** `{"groupId": 1}`
+**Response:** `{"success": true}`
+
+### GET /api/user/info?userId=NNN
+查看其他用户公开资料
+
+**Response:** `{"success": true, "userId": 2, "username": "xxx", "nickname": "xxx", "avatar": ""}`
+
+### POST /api/user/password
+修改密码
+
+**Request:** `{"oldPassword": "old", "newPassword": "new"}`
+**Response:** `{"success": true}`
+
+### POST /api/user/delete
+注销账号（需要密码确认）
+
+**Request:** `{"password": "xxx"}`
+**Response:** `{"success": true}`
+
+### WebSocket: typing
+正在输入提示
+
+**Client sends:** `{"type": "typing", "to": "userId"}`
+**Server forwards:** `{"type": "typing", "from": "userId", "to": "userId"}`

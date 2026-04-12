@@ -106,7 +106,7 @@ public:
 
         std::string sql = "SELECT msg_id, from_user, to_user, content, timestamp FROM private_messages "
             "WHERE ((from_user=" + std::to_string(userId) + " AND to_user=" + std::to_string(peerId) + ") "
-            "OR (from_user=" + std::to_string(peerId) + " AND to_user=" + std::to_string(userId) + "))";
+            "OR (from_user=" + std::to_string(peerId) + " AND to_user=" + std::to_string(userId) + ")) AND recalled=0";
         if (before > 0) sql += " AND timestamp<" + std::to_string(before);
         sql += " ORDER BY timestamp DESC LIMIT " + std::to_string(limit);
 
@@ -145,7 +145,7 @@ public:
         if (!conn || !conn->valid()) return json::array();
 
         std::string sql = "SELECT msg_id, from_user, content, timestamp FROM group_messages "
-            "WHERE group_id=" + std::to_string(groupId);
+            "WHERE group_id=" + std::to_string(groupId) + " AND recalled=0";
         if (before > 0) sql += " AND timestamp<" + std::to_string(before);
         sql += " ORDER BY timestamp DESC LIMIT " + std::to_string(limit);
 
@@ -188,17 +188,18 @@ public:
         int64_t twoMinAgo = std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::system_clock::now().time_since_epoch()).count() - 120000;
 
-        // Try private messages first
-        std::string sql = "DELETE FROM private_messages WHERE msg_id='" + conn->escape(msgId)
+        // Soft delete: mark as recalled instead of deleting
+        std::string sql = "UPDATE private_messages SET recalled=1 WHERE msg_id='" + conn->escape(msgId)
             + "' AND from_user=" + std::to_string(fromUserId)
-            + " AND timestamp>" + std::to_string(twoMinAgo);
+            + " AND timestamp>" + std::to_string(twoMinAgo)
+            + " AND recalled=0";
         int affected = conn->execute(sql);
 
         if (affected <= 0) {
-            // Try group messages
-            sql = "DELETE FROM group_messages WHERE msg_id='" + conn->escape(msgId)
+            sql = "UPDATE group_messages SET recalled=1 WHERE msg_id='" + conn->escape(msgId)
                 + "' AND from_user=" + std::to_string(fromUserId)
-                + " AND timestamp>" + std::to_string(twoMinAgo);
+                + " AND timestamp>" + std::to_string(twoMinAgo)
+                + " AND recalled=0";
             affected = conn->execute(sql);
         }
 

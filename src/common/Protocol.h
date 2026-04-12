@@ -47,6 +47,7 @@ inline const char* ERROR_MSG   = "error";      ///< 错误消息（S->C，通知
 inline const char* FILE_MSG    = "file_msg";   ///< 文件消息（C->S 发送 / S->C 推送，包含文件 URL 和元信息）
 inline const char* RECALL      = "recall";     ///< 消息撤回通知（C->S 请求撤回 / S->C 通知撤回）
 inline const char* READ_ACK    = "read_ack";   ///< 已读回执（C->S 发送，标记消息已读位置）
+inline const char* TYPING      = "typing";     ///< 正在输入提示（C->S 发送 / S->C 转发）
 /** @} */
 
 /**
@@ -273,6 +274,11 @@ inline std::string makeRecall(const std::string& msgId, int64_t fromUserId) {
 inline std::string makeReadAck(int64_t fromUserId, int64_t toUserId, const std::string& lastMsgId) {
     return json({{"type", READ_ACK}, {"from", std::to_string(fromUserId)},
                  {"to", std::to_string(toUserId)}, {"lastMsgId", lastMsgId}}).dump();
+}
+
+/// 构造正在输入通知
+inline std::string makeTyping(int64_t fromUserId, int64_t toUserId) {
+    return json({{"type", TYPING}, {"from", std::to_string(fromUserId)}, {"to", std::to_string(toUserId)}}).dump();
 }
 
 /**

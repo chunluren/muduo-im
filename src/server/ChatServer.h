@@ -38,9 +38,11 @@
 #include "net/EventLoop.h"
 #include "net/InetAddress.h"
 #include <nlohmann/json.hpp>
+#include <algorithm>
 #include <fstream>
 #include <memory>
 #include <string>
+#include <vector>
 #include <sys/stat.h>
 
 using json = nlohmann::json;
@@ -173,24 +175,6 @@ private:
                 return;
             }
             json result = friendService_.getFriends(userId);
-            resp.setJson(result.dump());
-        });
-
-        // POST /api/friends/add
-        httpServer_.POST("/api/friends/add", [this](const HttpRequest& req, HttpResponse& resp) {
-            int64_t userId = authFromRequest(req);
-            if (userId < 0) {
-                resp.setStatusCode(HttpStatusCode::UNAUTHORIZED);
-                resp.setText("unauthorized");
-                return;
-            }
-            auto j = json::parse(req.body, nullptr, false);
-            if (j.is_discarded()) {
-                resp = HttpResponse::badRequest("invalid JSON");
-                return;
-            }
-            int64_t friendId = j.value("friendId", (int64_t)0);
-            json result = friendService_.addFriend(userId, friendId);
             resp.setJson(result.dump());
         });
 
@@ -411,10 +395,35 @@ private:
                     // Ensure uploads directory exists
                     ::mkdir("../uploads", 0755);
 
+                    // File size limit: 50MB
+                    if (part.data.size() > 50 * 1024 * 1024) {
+                        resp = HttpResponse::badRequest("file too large (max 50MB)");
+                        return;
+                    }
+
                     // Generate unique filename
                     std::string ext = "";
                     auto dotPos = part.filename.rfind('.');
                     if (dotPos != std::string::npos) ext = part.filename.substr(dotPos);
+
+                    // File type validation
+                    std::string lowerExt = ext;
+                    std::transform(lowerExt.begin(), lowerExt.end(), lowerExt.begin(), ::tolower);
+                    static const std::vector<std::string> allowedExts = {
+                        ".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp",
+                        ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
+                        ".txt", ".md", ".zip", ".rar", ".7z",
+                        ".mp3", ".mp4", ".wav", ".avi", ".mov"
+                    };
+                    bool allowed = lowerExt.empty(); // no extension is OK
+                    for (auto& ae : allowedExts) {
+                        if (lowerExt == ae) { allowed = true; break; }
+                    }
+                    if (!allowed) {
+                        resp = HttpResponse::badRequest("file type not allowed");
+                        return;
+                    }
+
                     std::string savedName = Protocol::generateMsgId() + ext;
                     std::string filepath = "../uploads/" + savedName;
 
@@ -442,6 +451,55 @@ private:
 
         // Serve uploaded files
         httpServer_.serveStatic("/uploads", "../uploads");
+
+        // POST /api/groups/leave — 退出群组
+        httpServer_.POST("/api/groups/leave", [this](const HttpRequest& req, HttpResponse& resp) {
+            int64_t userId = authFromRequest(req);
+            if (userId < 0) { resp.setStatusCode(HttpStatusCode::UNAUTHORIZED); resp.setText("unauthorized"); return; }
+            auto j = json::parse(req.body, nullptr, false);
+            if (j.is_discarded()) { resp = HttpResponse::badRequest("invalid JSON"); return; }
+            int64_t groupId = j.value("groupId", (int64_t)0);
+            resp.setJson(groupService_.leaveGroup(userId, groupId).dump());
+        });
+
+        // POST /api/groups/delete — 解散群组（仅群主）
+        httpServer_.POST("/api/groups/delete", [this](const HttpRequest& req, HttpResponse& resp) {
+            int64_t userId = authFromRequest(req);
+            if (userId < 0) { resp.setStatusCode(HttpStatusCode::UNAUTHORIZED); resp.setText("unauthorized"); return; }
+            auto j = json::parse(req.body, nullptr, false);
+            if (j.is_discarded()) { resp = HttpResponse::badRequest("invalid JSON"); return; }
+            int64_t groupId = j.value("groupId", (int64_t)0);
+            resp.setJson(groupService_.deleteGroup(userId, groupId).dump());
+        });
+
+        // GET /api/user/info?userId=NNN — 查看他人资料
+        httpServer_.GET("/api/user/info", [this](const HttpRequest& req, HttpResponse& resp) {
+            int64_t userId = authFromRequest(req);
+            if (userId < 0) { resp.setStatusCode(HttpStatusCode::UNAUTHORIZED); resp.setText("unauthorized"); return; }
+            std::string targetStr = req.getParam("userId", "0");
+            int64_t targetId = 0;
+            try { targetId = std::stoll(targetStr); } catch (...) {}
+            if (targetId <= 0) { resp = HttpResponse::badRequest("invalid userId"); return; }
+            resp.setJson(userService_.getPublicProfile(targetId).dump());
+        });
+
+        // POST /api/user/password — 修改密码
+        httpServer_.POST("/api/user/password", [this](const HttpRequest& req, HttpResponse& resp) {
+            int64_t userId = authFromRequest(req);
+            if (userId < 0) { resp.setStatusCode(HttpStatusCode::UNAUTHORIZED); resp.setText("unauthorized"); return; }
+            auto j = json::parse(req.body, nullptr, false);
+            if (j.is_discarded()) { resp = HttpResponse::badRequest("invalid JSON"); return; }
+            resp.setJson(userService_.changePassword(userId, j.value("oldPassword", ""), j.value("newPassword", "")).dump());
+        });
+
+        // POST /api/user/delete — 注销账号
+        httpServer_.POST("/api/user/delete", [this](const HttpRequest& req, HttpResponse& resp) {
+            int64_t userId = authFromRequest(req);
+            if (userId < 0) { resp.setStatusCode(HttpStatusCode::UNAUTHORIZED); resp.setText("unauthorized"); return; }
+            auto j = json::parse(req.body, nullptr, false);
+            if (j.is_discarded()) { resp = HttpResponse::badRequest("invalid JSON"); return; }
+            resp.setJson(userService_.deleteAccount(userId, j.value("password", "")).dump());
+        });
     }
 
     // ==================== WebSocket ====================
@@ -519,6 +577,8 @@ private:
                 handlePrivateMessage(session, j, userId);
             } else if (type == Protocol::GROUP_MSG) {
                 handleGroupMessage(session, j, userId);
+            } else if (type == Protocol::TYPING) {
+                handleTyping(session, j, userId);
             } else if (type == Protocol::FILE_MSG) {
                 handleFileMessage(session, j, userId);
             } else if (type == Protocol::RECALL) {
@@ -561,6 +621,10 @@ private:
             session->sendText(Protocol::makeError("missing 'to' or 'content'"));
             return;
         }
+        if (content.size() > 10000) {
+            session->sendText(Protocol::makeError("message too long (max 10000 chars)"));
+            return;
+        }
 
         int64_t toUserId = 0;
         try { toUserId = std::stoll(toStr); } catch (...) {}
@@ -601,6 +665,10 @@ private:
         std::string content = j.value("content", "");
         if (toStr.empty() || content.empty()) {
             session->sendText(Protocol::makeError("missing 'to' or 'content'"));
+            return;
+        }
+        if (content.size() > 10000) {
+            session->sendText(Protocol::makeError("message too long (max 10000 chars)"));
             return;
         }
 
@@ -716,6 +784,19 @@ private:
         }
     }
 
+    void handleTyping(const WsSessionPtr& /*session*/, const json& j, int64_t fromUserId) {
+        std::string toStr = j.value("to", "");
+        if (toStr.empty()) return;
+        int64_t toUserId = 0;
+        try { toUserId = std::stoll(toStr); } catch (...) {}
+        if (toUserId <= 0) return;
+
+        auto recipientSession = onlineManager_.getSession(toUserId);
+        if (recipientSession) {
+            recipientSession->sendText(Protocol::makeTyping(fromUserId, toUserId));
+        }
+    }
+
     // ==================== Redis Unread Count ====================
 
     void incrementUnread(int64_t userId, int64_t peerId) {
@@ -750,11 +831,35 @@ private:
     // ==================== Redis Message Queue ====================
 
     void queueMessage(const std::string& msgJson) {
-        if (!redisPool_) return;
+        if (!redisPool_) {
+            // No Redis — direct MySQL write
+            directSaveMessage(msgJson);
+            return;
+        }
         auto conn = redisPool_->acquire(1000);
         if (conn && conn->valid()) {
             conn->lpush("msg_queue", msgJson);
             redisPool_->release(std::move(conn));
+        } else {
+            // Redis unavailable — fallback to direct MySQL write
+            directSaveMessage(msgJson);
+        }
+    }
+
+    void directSaveMessage(const std::string& msgJson) {
+        auto j = json::parse(msgJson, nullptr, false);
+        if (j.is_discarded()) return;
+        std::string type = j.value("_type", "");
+        if (type == "private") {
+            messageService_.savePrivateMessage(
+                j.value("msgId", ""), j.value("from", (int64_t)0),
+                j.value("to", (int64_t)0), j.value("content", ""),
+                j.value("timestamp", (int64_t)0));
+        } else if (type == "group") {
+            messageService_.saveGroupMessage(
+                j.value("msgId", ""), j.value("groupId", (int64_t)0),
+                j.value("from", (int64_t)0), j.value("content", ""),
+                j.value("timestamp", (int64_t)0));
         }
     }
 

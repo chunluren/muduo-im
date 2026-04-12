@@ -22,7 +22,8 @@ CREATE TABLE IF NOT EXISTS `groups` (
     id BIGINT PRIMARY KEY AUTO_INCREMENT,
     name VARCHAR(128) NOT NULL,
     owner_id BIGINT NOT NULL,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_groups_owner (owner_id)
 );
 
 CREATE TABLE IF NOT EXISTS group_members (
@@ -40,6 +41,7 @@ CREATE TABLE IF NOT EXISTS private_messages (
     to_user BIGINT NOT NULL,
     content TEXT,
     msg_type TINYINT DEFAULT 0,
+    recalled TINYINT DEFAULT 0,
     timestamp BIGINT NOT NULL,
     INDEX idx_chat (from_user, to_user, timestamp),
     INDEX idx_inbox (to_user, timestamp)
@@ -52,6 +54,7 @@ CREATE TABLE IF NOT EXISTS group_messages (
     from_user BIGINT NOT NULL,
     content TEXT,
     msg_type TINYINT DEFAULT 0,
+    recalled TINYINT DEFAULT 0,
     timestamp BIGINT NOT NULL,
     INDEX idx_group_time (group_id, timestamp)
 );
@@ -65,3 +68,4 @@ CREATE TABLE IF NOT EXISTS friend_requests (
     INDEX idx_to_user (to_user, status),
     UNIQUE KEY uk_pair (from_user, to_user)
 );
+
