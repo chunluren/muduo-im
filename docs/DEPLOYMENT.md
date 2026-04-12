@@ -49,7 +49,7 @@ mysql -u root < sql/init.sql
 
 该脚本会:
 1. 创建 `muduo_im` 数据库（utf8mb4 字符集）
-2. 创建 users、friends、groups、group_members、private_messages、group_messages 六张表
+2. 创建 users、friends、friend_requests、groups、group_members、private_messages、group_messages 七张表
 3. 建立必要的索引
 
 ## 编译
@@ -146,7 +146,9 @@ WebSocket: ws://localhost:9090/ws?token=xxx
 bash tests/e2e_test.sh
 ```
 
-测试内容: 注册、登录、密码验证、好友添加/查询、群组创建/加入/成员查询、未认证访问拒绝。
+测试内容（共 21 项检查）: 注册、登录、密码验证、用户资料查看/修改、修改密码、好友申请/同意/拒绝/列表、群组创建/加入/退出/解散/成员查询、消息长度校验、文件上传限制、未认证访问拒绝。
+
+注意: 旧的 `/api/friends/add` 接口已移除，好友添加改为申请制（`/api/friends/request` + `/api/friends/handle`）。
 
 ### WebSocket 压力测试
 

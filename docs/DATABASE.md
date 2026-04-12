@@ -13,6 +13,16 @@
 │ avatar       │   │                          └──────────────┘  │
 │ created_at   │   │                                 │          │
 └──────────────┘   │                                 │          │
+       │           │   ┌──────────────────┐
+       │           │   │ friend_requests  │
+       │           │   ├──────────────────┤
+       │           ├───│ from_user    FK  │
+       │           ├───│ to_user      FK  │
+       │           │   │ id           PK  │
+       │           │   │ status           │
+       │           │   │ created_at       │
+       │           │   └──────────────────┘
+       │           │
        │           │   ┌──────────────────┐          │          │
        │           │   │  group_members   │          │          │
        │           │   ├──────────────────┤          │          │
@@ -71,6 +81,20 @@
 
 设计: 双向存储，添加好友时写入 (A,B) 和 (B,A) 两条记录，删除时同样删除两条。
 
+### friend_requests -- 好友申请表
+
+| 字段 | 类型 | 约束 | 说明 |
+|------|------|------|------|
+| id | BIGINT | PK, AUTO_INCREMENT | 申请 ID |
+| from_user | BIGINT | NOT NULL | 申请发起者 ID |
+| to_user | BIGINT | NOT NULL | 申请目标用户 ID |
+| status | VARCHAR(16) | DEFAULT 'pending' | 状态: pending / accepted / rejected |
+| created_at | TIMESTAMP | DEFAULT CURRENT_TIMESTAMP | 申请时间 |
+
+索引: `idx_to_user (to_user)` -- 加速查询某用户收到的好友申请。
+
+设计: 用户 A 向 B 发送好友申请，B 同意后自动在 friends 表中双向插入记录。
+
 ### groups -- 群组表
 
 | 字段 | 类型 | 约束 | 说明 |
@@ -101,6 +125,7 @@
 | content | TEXT | | 消息内容（文件消息为 JSON） |
 | msg_type | TINYINT | DEFAULT 0 | 消息类型（预留） |
 | timestamp | BIGINT | NOT NULL | 毫秒时间戳 |
+| recalled | TINYINT | DEFAULT 0 | 是否已撤回（0=正常, 1=已撤回） |
 
 索引:
 - `idx_chat (from_user, to_user, timestamp)` -- 查询两人之间的聊天记录
@@ -117,6 +142,7 @@
 | content | TEXT | | 消息内容 |
 | msg_type | TINYINT | DEFAULT 0 | 消息类型（预留） |
 | timestamp | BIGINT | NOT NULL | 毫秒时间戳 |
+| recalled | TINYINT | DEFAULT 0 | 是否已撤回（0=正常, 1=已撤回） |
 
 索引: `idx_group_time (group_id, timestamp)` -- 按群和时间查询历史消息。
 

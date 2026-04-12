@@ -5,14 +5,19 @@
 ## 功能
 
 - 用户注册/登录（JWT 认证）
-- 好友管理（添加/删除/列表）
-- 群组管理（创建/加入/成员列表）
+- 查看/修改个人资料、查看他人资料
+- 修改密码、注销账号
+- 好友申请流程（申请/同意/拒绝/双向添加/删除/列表）
+- 群组管理（创建/加入/退出/解散/成员列表）
 - 实时私聊 + 群聊（WebSocket）
+- 正在输入提示（typing indicator）
 - 消息持久化 + 历史查询（MySQL）
-- 在线状态管理
-- 文件传输（HTTP 上传 + WebSocket 通知）
-- 消息撤回（2 分钟内）
+- 消息长度校验（最大 10000 字符）
+- 在线状态管理 + 未读消息计数
+- 文件传输（HTTP 上传 + WebSocket 通知，50MB 限制 + 类型白名单）
+- 消息撤回（2 分钟内，软删除 recalled 字段）
 - 已读回执
+- Redis 降级（Redis 不可用时直接写 MySQL 回退）
 - Web 前端（单文件 HTML）
 
 ## 技术栈
@@ -94,14 +99,25 @@ muduo-im/
 |------|------|------|
 | /api/register | POST | 注册 |
 | /api/login | POST | 登录 → JWT |
+| /api/user/info | GET | 查看他人资料 |
+| /api/user/password | POST | 修改密码 |
+| /api/user/delete | POST | 注销账号 |
+| /api/user/profile | GET | 查看自己资料 |
+| /api/user/profile | PUT | 修改资料 |
+| /api/user/search | GET | 搜索用户 |
 | /api/friends | GET | 好友列表 |
-| /api/friends/add | POST | 添加好友 |
+| /api/friends/request | POST | 发送好友申请 |
+| /api/friends/requests | GET | 好友申请列表 |
+| /api/friends/handle | POST | 处理好友申请 |
 | /api/friends/delete | POST | 删除好友 |
 | /api/groups | GET | 群列表 |
 | /api/groups/create | POST | 创建群 |
 | /api/groups/join | POST | 加入群 |
+| /api/groups/leave | POST | 退出群组 |
+| /api/groups/delete | POST | 解散群组（仅群主） |
 | /api/groups/members | GET | 群成员 |
 | /api/messages/history | GET | 历史消息 |
+| /api/unread | GET | 未读消息计数 |
 | /api/upload | POST | 文件上传（multipart） |
 
 ### WebSocket 协议
@@ -115,6 +131,7 @@ muduo-im/
 {"type":"file_msg", "to":"userId", "url":"/uploads/xxx", "filename":"test.pdf", "fileSize":1024}
 {"type":"recall", "msgId":"uuid"}
 {"type":"read_ack", "to":"senderId", "lastMsgId":"uuid"}
+{"type":"typing", "to":"userId"}
 ```
 
 服务端推送:
@@ -126,6 +143,7 @@ muduo-im/
 {"type":"file_msg", "from":"userId", "url":"/uploads/xxx", "filename":"test.pdf", "fileSize":1024, "msgId":"uuid"}
 {"type":"recall", "msgId":"uuid", "from":"userId"}
 {"type":"read_ack", "from":"readerId", "to":"senderId", "lastMsgId":"uuid"}
+{"type":"typing", "from":"userId"}
 ```
 
 ## 测试

@@ -71,7 +71,7 @@ hashPassword(password) = SHA256("muduo-im-salt-v1" + password)
 
 使用 UUID v4 格式: `xxxxxxxx-xxxx-4xxx-Nxxx-xxxxxxxxxxxx`，通过 `std::random_device` + `mt19937` 生成随机数，设置 version=4 和 variant bits。
 
-## 消息撤回
+## 消息撤回（软删除）
 
 位置: `MessageService::recallMessage()`
 
@@ -83,12 +83,14 @@ hashPassword(password) = SHA256("muduo-im-salt-v1" + password)
 
 ### 实现
 
+消息撤回采用软删除策略，设置 `recalled = 1` 而非物理删除:
+
 ```sql
-DELETE FROM private_messages
+UPDATE private_messages SET recalled = 1
 WHERE msg_id='xxx' AND from_user=123 AND timestamp > (now - 120000)
 ```
 
-如果 private_messages 未命中，继续尝试 group_messages。
+如果 private_messages 未命中，继续尝试 group_messages。查询历史消息时通过 `recalled` 字段过滤已撤回消息。
 
 ### 通知
 
@@ -112,9 +114,19 @@ WHERE msg_id='xxx' AND from_user=123 AND timestamp > (now - 120000)
 
 位置: `FriendService`
 
+### 好友申请流程
+
+好友添加已从直接添加改为申请制:
+
+1. 用户 A 发送好友申请: `POST /api/friends/request {friendId: B}`
+2. 申请记录写入 `friend_requests` 表，状态为 `pending`
+3. 用户 B 查看申请列表: `GET /api/friends/requests`
+4. 用户 B 处理申请: `POST /api/friends/handle {requestId: N, action: "accept"}` 或 `"reject"`
+5. 同意后，自动双向写入 `friends` 表
+
 ### 双向存储
 
-添加好友时插入两条记录:
+同意好友申请后插入两条记录:
 ```sql
 INSERT IGNORE INTO friends (user_id, friend_id) VALUES (1, 2)
 INSERT IGNORE INTO friends (user_id, friend_id) VALUES (2, 1)
@@ -151,6 +163,27 @@ INSERT IGNORE INTO friends (user_id, friend_id) VALUES (2, 1)
 - 内部维护 `unordered_map<int64_t, WsSessionPtr>`
 - 所有方法（addUser, removeUser, getSession, isOnline, getOnlineUsers, getUserId）均使用 `std::lock_guard<std::mutex>` 保护
 - getSession 额外检查 `session->isOpen()` 防止返回已关闭的连接
+
+## Redis 降级策略
+
+位置: `MessageService::queueMessage()` / `MessageService::directSaveMessage()`
+
+当 Redis 不可用时（连接失败、超时等），消息队列操作会自动降级为直接写入 MySQL:
+
+1. 正常路径: 消息先写入 Redis 队列，后台消费者批量写入 MySQL
+2. 降级路径: Redis 操作失败时，调用 `directSaveMessage()` 直接 INSERT 到 MySQL
+3. 降级对用户透明，消息不会丢失，仅写入延迟略有变化
+
+## 文件上传校验
+
+位置: `ChatServer::handleUpload()`
+
+### 校验逻辑
+
+1. 文件大小限制: 最大 50MB，超出返回 413 错误
+2. 文件类型白名单: 仅允许安全的文件扩展名（图片、文档、压缩包等）
+3. 文件名清理: 防止路径穿越攻击（过滤 `..` 和 `/`）
+4. 存储路径: 文件保存到 `uploads/` 目录，使用 UUID 重命名防止冲突
 
 ## CORS 支持
 
