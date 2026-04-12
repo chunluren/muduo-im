@@ -606,6 +606,254 @@ body {
 ::-webkit-scrollbar-thumb:hover {
   background: #aaa;
 }
+
+/* Modal overlay */
+.modal-overlay {
+  position: fixed;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background: rgba(0,0,0,0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.modal-card {
+  background: #fff;
+  border-radius: 12px;
+  padding: 28px;
+  width: 400px;
+  max-height: 80vh;
+  overflow-y: auto;
+  box-shadow: 0 10px 40px rgba(0,0,0,0.25);
+}
+
+.modal-card h3 {
+  margin-bottom: 16px;
+  font-size: 18px;
+  color: #333;
+}
+
+.modal-card .form-group {
+  margin-bottom: 14px;
+}
+
+.modal-card .form-group label {
+  display: block;
+  margin-bottom: 4px;
+  font-size: 13px;
+  color: #666;
+}
+
+.modal-card .form-group input {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  font-size: 14px;
+  outline: none;
+}
+
+.modal-card .form-group input:focus {
+  border-color: #4A90D9;
+}
+
+.modal-card .form-group input[readonly] {
+  background: #f5f5f5;
+  color: #999;
+}
+
+.modal-card .modal-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-top: 16px;
+}
+
+.modal-card .btn-modal {
+  padding: 8px 18px;
+  border: none;
+  border-radius: 6px;
+  font-size: 14px;
+  cursor: pointer;
+  transition: background 0.3s;
+}
+
+.modal-card .btn-modal.primary {
+  background: #4A90D9;
+  color: #fff;
+}
+
+.modal-card .btn-modal.primary:hover {
+  background: #357ABD;
+}
+
+.modal-card .btn-modal.cancel {
+  background: #e0e0e0;
+  color: #666;
+}
+
+.modal-card .btn-modal.cancel:hover {
+  background: #ccc;
+}
+
+/* Search results */
+.search-result-list {
+  list-style: none;
+  margin-top: 12px;
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.search-result-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 8px;
+  border-bottom: 1px solid #f0f0f0;
+}
+
+.search-result-item:last-child {
+  border-bottom: none;
+}
+
+.search-result-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.search-result-info .sr-username {
+  font-size: 14px;
+  font-weight: 500;
+  color: #333;
+}
+
+.search-result-info .sr-nickname {
+  font-size: 12px;
+  color: #999;
+}
+
+.search-result-item .btn-add-friend {
+  padding: 4px 12px;
+  font-size: 12px;
+  background: #4A90D9;
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background 0.3s;
+  white-space: nowrap;
+}
+
+.search-result-item .btn-add-friend:hover {
+  background: #357ABD;
+}
+
+.search-result-item .btn-add-friend:disabled {
+  background: #b0c4de;
+  cursor: not-allowed;
+}
+
+/* Friend requests section */
+.friend-request-list {
+  list-style: none;
+}
+
+.friend-request-item {
+  padding: 8px 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid #f0f0f0;
+}
+
+.friend-request-item:last-child {
+  border-bottom: none;
+}
+
+.fr-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.fr-info .fr-name {
+  font-size: 13px;
+  font-weight: 500;
+  color: #333;
+}
+
+.fr-info .fr-time {
+  font-size: 11px;
+  color: #aaa;
+}
+
+.fr-actions {
+  display: flex;
+  gap: 4px;
+}
+
+.fr-actions button {
+  padding: 3px 8px;
+  font-size: 11px;
+  border: none;
+  border-radius: 3px;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.fr-actions .btn-accept {
+  background: #2ecc71;
+  color: #fff;
+}
+
+.fr-actions .btn-accept:hover {
+  background: #27ae60;
+}
+
+.fr-actions .btn-reject {
+  background: #e74c3c;
+  color: #fff;
+}
+
+.fr-actions .btn-reject:hover {
+  background: #c0392b;
+}
+
+/* Badge for request count */
+.request-badge {
+  background: #e74c3c;
+  color: #fff;
+  font-size: 10px;
+  padding: 1px 5px;
+  border-radius: 8px;
+  margin-left: 4px;
+  display: none;
+}
+
+.request-badge.show {
+  display: inline-block;
+}
+
+/* Profile button in header */
+.sidebar-header .btn-profile {
+  padding: 4px 10px;
+  font-size: 12px;
+  background: none;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  cursor: pointer;
+  color: #4A90D9;
+  transition: all 0.3s;
+  margin-right: 6px;
+}
+
+.sidebar-header .btn-profile:hover {
+  background: #4A90D9;
+  color: #fff;
+  border-color: #4A90D9;
+}
 </style>
 </head>
 <body>
@@ -656,22 +904,30 @@ body {
   <div class="sidebar">
     <div class="sidebar-header">
       <span class="user-info" id="userNickname"></span>
-      <button class="btn-logout" onclick="doLogout()">退出</button>
+      <span>
+        <button class="btn-profile" onclick="openProfileModal()">个人资料</button>
+        <button class="btn-logout" onclick="doLogout()">退出</button>
+      </span>
     </div>
     <div class="sidebar-sections">
+      <!-- Friend Requests Section -->
+      <div class="sidebar-section">
+        <div class="sidebar-section-title">
+          <span>好友申请<span id="requestBadge" class="request-badge">0</span></span>
+          <div class="section-actions">
+            <button class="btn-action" onclick="loadFriendRequests()">刷新</button>
+          </div>
+        </div>
+        <ul id="friendRequestList" class="friend-request-list"></ul>
+      </div>
       <!-- Friends Section -->
       <div class="sidebar-section">
         <div class="sidebar-section-title">
           <span>好友</span>
           <div class="section-actions">
-            <button class="btn-action" onclick="toggleInlineForm('addFriend')">添加</button>
+            <button class="btn-action" onclick="openSearchModal()">添加</button>
             <button class="btn-action" onclick="refreshFriends()">刷新</button>
           </div>
-        </div>
-        <div id="addFriendForm" class="inline-form">
-          <input type="text" id="addFriendId" placeholder="输入好友ID">
-          <button onclick="doAddFriend()">确认</button>
-          <button class="btn-cancel" onclick="toggleInlineForm('addFriend')">取消</button>
         </div>
         <ul id="friendList" class="contact-list"></ul>
       </div>
@@ -720,6 +976,44 @@ body {
   </div>
 </div>
 
+<!-- Profile Modal -->
+<div id="profileModal" class="modal-overlay" style="display:none;" onclick="if(event.target===this)closeProfileModal()">
+  <div class="modal-card">
+    <h3>个人资料</h3>
+    <div class="form-group">
+      <label>用户名</label>
+      <input type="text" id="profileUsername" readonly>
+    </div>
+    <div class="form-group">
+      <label>昵称</label>
+      <input type="text" id="profileNickname" placeholder="输入昵称">
+    </div>
+    <div class="form-group">
+      <label>头像 URL</label>
+      <input type="text" id="profileAvatar" placeholder="输入头像链接">
+    </div>
+    <div class="modal-actions">
+      <button class="btn-modal cancel" onclick="closeProfileModal()">取消</button>
+      <button class="btn-modal primary" onclick="saveProfile()">保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- Search User Modal -->
+<div id="searchModal" class="modal-overlay" style="display:none;" onclick="if(event.target===this)closeSearchModal()">
+  <div class="modal-card">
+    <h3>搜索用户</h3>
+    <div class="form-group">
+      <label>输入用户名或昵称（至少 2 个字符）</label>
+      <input type="text" id="searchKeyword" placeholder="搜索..." oninput="onSearchInput()">
+    </div>
+    <ul id="searchResults" class="search-result-list"></ul>
+    <div class="modal-actions">
+      <button class="btn-modal cancel" onclick="closeSearchModal()">关闭</button>
+    </div>
+  </div>
+</div>
+
 <script>
 // ===== Config =====
 const API_BASE = '';
@@ -738,6 +1032,8 @@ let groups = []; // [{groupId, name, ownerId}]
 let onlineUsers = new Set();
 let unreadCounts = {}; // key: 'friend_id' or 'group_id', value: number
 let messageCache = {}; // key: 'friend_id' or 'group_id', value: [messages]
+let friendRequests = []; // [{requestId, fromUserId, username, nickname, avatar, createdAt}]
+let searchDebounceTimer = null;
 
 // ===== UUID =====
 function generateUUID() {
@@ -850,6 +1146,7 @@ function doLogout() {
   currentChat = null;
   friends = [];
   groups = [];
+  friendRequests = [];
   onlineUsers.clear();
   unreadCounts = {};
   messageCache = {};
@@ -868,6 +1165,7 @@ function showChatPage() {
   document.getElementById('userNickname').textContent = nickname;
   loadFriends();
   loadGroups();
+  loadFriendRequests();
   connectWebSocket();
 }
 
@@ -906,16 +1204,176 @@ function renderFriendList() {
   });
 }
 
-async function doAddFriend() {
-  const friendId = parseInt(document.getElementById('addFriendId').value.trim());
-  if (!friendId) { alert('请输入有效的好友ID'); return; }
+// ===== Profile Modal =====
+async function openProfileModal() {
   try {
-    await api('POST', '/api/friends/add', { friendId });
-    document.getElementById('addFriendId').value = '';
-    toggleInlineForm('addFriend');
-    loadFriends();
+    const data = await api('GET', '/api/user/profile');
+    if (data.success) {
+      document.getElementById('profileUsername').value = data.username || '';
+      document.getElementById('profileNickname').value = data.nickname || '';
+      document.getElementById('profileAvatar').value = data.avatar || '';
+    }
   } catch (e) {
-    alert('添加好友失败: ' + e.message);
+    console.error('获取资料失败:', e);
+  }
+  document.getElementById('profileModal').style.display = 'flex';
+}
+
+function closeProfileModal() {
+  document.getElementById('profileModal').style.display = 'none';
+}
+
+async function saveProfile() {
+  const nick = document.getElementById('profileNickname').value.trim();
+  const avatar = document.getElementById('profileAvatar').value.trim();
+  if (!nick && !avatar) { alert('请至少填写一项'); return; }
+  try {
+    const data = await api('PUT', '/api/user/profile', { nickname: nick, avatar: avatar });
+    if (data.success) {
+      if (nick) {
+        nickname = nick;
+        localStorage.setItem('im_nickname', nickname);
+        document.getElementById('userNickname').textContent = nickname;
+      }
+      closeProfileModal();
+    } else {
+      alert(data.message || '保存失败');
+    }
+  } catch (e) {
+    alert('保存失败: ' + e.message);
+  }
+}
+
+// ===== Search User Modal =====
+function openSearchModal() {
+  document.getElementById('searchKeyword').value = '';
+  document.getElementById('searchResults').innerHTML = '';
+  document.getElementById('searchModal').style.display = 'flex';
+  document.getElementById('searchKeyword').focus();
+}
+
+function closeSearchModal() {
+  document.getElementById('searchModal').style.display = 'none';
+}
+
+function onSearchInput() {
+  if (searchDebounceTimer) clearTimeout(searchDebounceTimer);
+  searchDebounceTimer = setTimeout(doSearchUsers, 400);
+}
+
+async function doSearchUsers() {
+  const keyword = document.getElementById('searchKeyword').value.trim();
+  const list = document.getElementById('searchResults');
+  if (keyword.length < 2) {
+    list.innerHTML = '<li style="padding:10px;color:#999;font-size:13px;">请输入至少 2 个字符</li>';
+    return;
+  }
+  try {
+    const data = await api('GET', '/api/user/search?keyword=' + encodeURIComponent(keyword));
+    list.innerHTML = '';
+    if (data.success && data.users && data.users.length > 0) {
+      data.users.forEach(u => {
+        if (u.userId === userId) return; // skip self
+        const isFriend = friends.some(f => f.userId === u.userId);
+        const li = document.createElement('li');
+        li.className = 'search-result-item';
+        li.innerHTML = `
+          <div class="search-result-info">
+            <span class="sr-username">${escapeHtml(u.username)}</span>
+            <span class="sr-nickname">${u.nickname ? escapeHtml(u.nickname) : ''}</span>
+          </div>
+          ${isFriend
+            ? '<button class="btn-add-friend" disabled>已是好友</button>'
+            : '<button class="btn-add-friend" onclick="sendFriendRequest(' + u.userId + ', this)">申请添加</button>'}
+        `;
+        list.appendChild(li);
+      });
+      if (list.children.length === 0) {
+        list.innerHTML = '<li style="padding:10px;color:#999;font-size:13px;">无搜索结果</li>';
+      }
+    } else {
+      list.innerHTML = '<li style="padding:10px;color:#999;font-size:13px;">无搜索结果</li>';
+    }
+  } catch (e) {
+    list.innerHTML = '<li style="padding:10px;color:#e74c3c;font-size:13px;">搜索失败: ' + escapeHtml(e.message) + '</li>';
+  }
+}
+
+async function sendFriendRequest(toUserId, btn) {
+  try {
+    btn.disabled = true;
+    btn.textContent = '发送中...';
+    const data = await api('POST', '/api/friends/request', { toUserId });
+    if (data.success) {
+      btn.textContent = '已发送';
+    } else {
+      btn.textContent = data.message || '失败';
+      setTimeout(() => { btn.disabled = false; btn.textContent = '申请添加'; }, 2000);
+    }
+  } catch (e) {
+    btn.textContent = '失败';
+    setTimeout(() => { btn.disabled = false; btn.textContent = '申请添加'; }, 2000);
+  }
+}
+
+// ===== Friend Requests =====
+async function loadFriendRequests() {
+  try {
+    friendRequests = await api('GET', '/api/friends/requests');
+    renderFriendRequests();
+  } catch (e) {
+    console.error('加载好友申请失败:', e);
+    friendRequests = [];
+    renderFriendRequests();
+  }
+}
+
+function renderFriendRequests() {
+  const list = document.getElementById('friendRequestList');
+  const badge = document.getElementById('requestBadge');
+  list.innerHTML = '';
+
+  if (!Array.isArray(friendRequests)) friendRequests = [];
+
+  badge.textContent = friendRequests.length;
+  badge.className = 'request-badge' + (friendRequests.length > 0 ? ' show' : '');
+
+  if (friendRequests.length === 0) {
+    list.innerHTML = '<li style="padding:8px 16px;color:#999;font-size:12px;">暂无好友申请</li>';
+    return;
+  }
+
+  friendRequests.forEach(r => {
+    const li = document.createElement('li');
+    li.className = 'friend-request-item';
+    li.innerHTML = `
+      <div class="fr-info">
+        <span class="fr-name">${escapeHtml(r.nickname || r.username)}</span>
+        <span class="fr-time">${r.createdAt || ''}</span>
+      </div>
+      <div class="fr-actions">
+        <button class="btn-accept" onclick="handleFriendRequest(${r.requestId}, true, this)">同意</button>
+        <button class="btn-reject" onclick="handleFriendRequest(${r.requestId}, false, this)">拒绝</button>
+      </div>
+    `;
+    list.appendChild(li);
+  });
+}
+
+async function handleFriendRequest(requestId, accept, btn) {
+  try {
+    btn.disabled = true;
+    const data = await api('POST', '/api/friends/handle', { requestId, accept });
+    if (data.success) {
+      loadFriendRequests();
+      if (accept) loadFriends();
+    } else {
+      alert(data.message || '操作失败');
+      btn.disabled = false;
+    }
+  } catch (e) {
+    alert('操作失败: ' + e.message);
+    btn.disabled = false;
   }
 }
 
@@ -1402,6 +1860,11 @@ function handleWsMessage(data) {
       if (currentChat && currentChat.type === 'friend' && currentChat.id == ackFrom) {
         renderMessages();
       }
+      break;
+    }
+    case 'friend_request': {
+      // Someone sent us a friend request — refresh the list
+      loadFriendRequests();
       break;
     }
     case 'error': {

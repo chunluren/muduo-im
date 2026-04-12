@@ -322,6 +322,66 @@ private:
             resp.setJson(result.dump());
         });
 
+        // GET /api/user/profile — 获取自己的资料
+        httpServer_.GET("/api/user/profile", [this](const HttpRequest& req, HttpResponse& resp) {
+            int64_t userId = authFromRequest(req);
+            if (userId < 0) { resp.setStatusCode(HttpStatusCode::UNAUTHORIZED); resp.setText("unauthorized"); return; }
+            resp.setJson(userService_.getProfile(userId).dump());
+        });
+
+        // PUT /api/user/profile — 修改资料
+        httpServer_.PUT("/api/user/profile", [this](const HttpRequest& req, HttpResponse& resp) {
+            int64_t userId = authFromRequest(req);
+            if (userId < 0) { resp.setStatusCode(HttpStatusCode::UNAUTHORIZED); resp.setText("unauthorized"); return; }
+            auto j = json::parse(req.body, nullptr, false);
+            if (j.is_discarded()) { resp = HttpResponse::badRequest("invalid JSON"); return; }
+            resp.setJson(userService_.updateProfile(userId, j.value("nickname", ""), j.value("avatar", "")).dump());
+        });
+
+        // GET /api/user/search?keyword=xxx — 搜索用户
+        httpServer_.GET("/api/user/search", [this](const HttpRequest& req, HttpResponse& resp) {
+            int64_t userId = authFromRequest(req);
+            if (userId < 0) { resp.setStatusCode(HttpStatusCode::UNAUTHORIZED); resp.setText("unauthorized"); return; }
+            std::string keyword = req.getParam("keyword", "");
+            resp.setJson(userService_.searchUsers(keyword).dump());
+        });
+
+        // POST /api/friends/request — 发送好友申请
+        httpServer_.POST("/api/friends/request", [this](const HttpRequest& req, HttpResponse& resp) {
+            int64_t userId = authFromRequest(req);
+            if (userId < 0) { resp.setStatusCode(HttpStatusCode::UNAUTHORIZED); resp.setText("unauthorized"); return; }
+            auto j = json::parse(req.body, nullptr, false);
+            if (j.is_discarded()) { resp = HttpResponse::badRequest("invalid JSON"); return; }
+            int64_t toUserId = j.value("toUserId", (int64_t)0);
+            auto result = friendService_.sendRequest(userId, toUserId);
+            resp.setJson(result.dump());
+
+            // 实时通知对方有新好友申请
+            auto session = onlineManager_.getSession(toUserId);
+            if (session) {
+                session->sendText(json({{"type", "friend_request"}, {"from", std::to_string(userId)}}).dump());
+            }
+        });
+
+        // GET /api/friends/requests — 获取收到的好友申请
+        httpServer_.GET("/api/friends/requests", [this](const HttpRequest& req, HttpResponse& resp) {
+            int64_t userId = authFromRequest(req);
+            if (userId < 0) { resp.setStatusCode(HttpStatusCode::UNAUTHORIZED); resp.setText("unauthorized"); return; }
+            resp.setJson(friendService_.getRequests(userId).dump());
+        });
+
+        // POST /api/friends/handle — 处理好友申请（同意/拒绝）
+        httpServer_.POST("/api/friends/handle", [this](const HttpRequest& req, HttpResponse& resp) {
+            int64_t userId = authFromRequest(req);
+            if (userId < 0) { resp.setStatusCode(HttpStatusCode::UNAUTHORIZED); resp.setText("unauthorized"); return; }
+            auto j = json::parse(req.body, nullptr, false);
+            if (j.is_discarded()) { resp = HttpResponse::badRequest("invalid JSON"); return; }
+            int64_t requestId = j.value("requestId", (int64_t)0);
+            bool accept = j.value("accept", false);
+            auto result = friendService_.handleRequest(userId, requestId, accept);
+            resp.setJson(result.dump());
+        });
+
         // POST /api/upload -- file upload
         httpServer_.POST("/api/upload", [this](const HttpRequest& req, HttpResponse& resp) {
             int64_t userId = authFromRequest(req);

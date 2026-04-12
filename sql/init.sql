@@ -55,3 +55,13 @@ CREATE TABLE IF NOT EXISTS group_messages (
     timestamp BIGINT NOT NULL,
     INDEX idx_group_time (group_id, timestamp)
 );
+
+CREATE TABLE IF NOT EXISTS friend_requests (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    from_user BIGINT NOT NULL,
+    to_user BIGINT NOT NULL,
+    status TINYINT DEFAULT 0 COMMENT '0=pending, 1=accepted, 2=rejected',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_to_user (to_user, status),
+    UNIQUE KEY uk_pair (from_user, to_user)
+);

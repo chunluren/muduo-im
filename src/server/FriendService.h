@@ -109,6 +109,91 @@ public:
         return {{"success", true}};
     }
 
+    /// 发送好友申请
+    json sendRequest(int64_t fromUser, int64_t toUser) {
+        if (fromUser == toUser) return {{"success", false}, {"message", "cannot add self"}};
+
+        auto conn = db_->acquire(3000);
+        if (!conn || !conn->valid()) return {{"success", false}, {"message", "db error"}};
+
+        // 检查是否已经是好友
+        auto check = conn->query("SELECT 1 FROM friends WHERE user_id=" + std::to_string(fromUser)
+            + " AND friend_id=" + std::to_string(toUser));
+        if (check && mysql_num_rows(check.get()) > 0) {
+            db_->release(std::move(conn));
+            return {{"success", false}, {"message", "already friends"}};
+        }
+
+        // 插入申请（IGNORE 避免重复）
+        conn->execute("INSERT IGNORE INTO friend_requests (from_user, to_user, status) VALUES ("
+            + std::to_string(fromUser) + "," + std::to_string(toUser) + ", 0)");
+        db_->release(std::move(conn));
+
+        return {{"success", true}, {"message", "request sent"}};
+    }
+
+    /// 获取收到的好友申请列表
+    json getRequests(int64_t userId) {
+        auto conn = db_->acquire(3000);
+        if (!conn || !conn->valid()) return json::array();
+
+        auto result = conn->query(
+            "SELECT fr.id, fr.from_user, u.username, u.nickname, u.avatar, fr.created_at "
+            "FROM friend_requests fr JOIN users u ON fr.from_user = u.id "
+            "WHERE fr.to_user=" + std::to_string(userId) + " AND fr.status=0 "
+            "ORDER BY fr.created_at DESC");
+        db_->release(std::move(conn));
+
+        json requests = json::array();
+        if (result) {
+            MYSQL_ROW row;
+            while ((row = mysql_fetch_row(result.get()))) {
+                requests.push_back({
+                    {"requestId", std::stoll(row[0])},
+                    {"fromUserId", std::stoll(row[1])},
+                    {"username", row[2]},
+                    {"nickname", row[3] ? row[3] : ""},
+                    {"avatar", row[4] ? row[4] : ""},
+                    {"createdAt", row[5] ? row[5] : ""}
+                });
+            }
+        }
+        return requests;
+    }
+
+    /// 处理好友申请（同意/拒绝）
+    json handleRequest(int64_t userId, int64_t requestId, bool accept) {
+        auto conn = db_->acquire(3000);
+        if (!conn || !conn->valid()) return {{"success", false}, {"message", "db error"}};
+
+        // 查找申请
+        auto result = conn->query("SELECT from_user, to_user FROM friend_requests WHERE id="
+            + std::to_string(requestId) + " AND to_user=" + std::to_string(userId) + " AND status=0");
+        if (!result || mysql_num_rows(result.get()) == 0) {
+            db_->release(std::move(conn));
+            return {{"success", false}, {"message", "request not found"}};
+        }
+
+        MYSQL_ROW row = mysql_fetch_row(result.get());
+        int64_t fromUser = std::stoll(row[0]);
+        int64_t toUser = std::stoll(row[1]);
+
+        if (accept) {
+            // 同意：更新状态 + 双向添加好友
+            conn->execute("UPDATE friend_requests SET status=1 WHERE id=" + std::to_string(requestId));
+            conn->execute("INSERT IGNORE INTO friends (user_id, friend_id) VALUES ("
+                + std::to_string(fromUser) + "," + std::to_string(toUser) + ")");
+            conn->execute("INSERT IGNORE INTO friends (user_id, friend_id) VALUES ("
+                + std::to_string(toUser) + "," + std::to_string(fromUser) + ")");
+        } else {
+            // 拒绝
+            conn->execute("UPDATE friend_requests SET status=2 WHERE id=" + std::to_string(requestId));
+        }
+        db_->release(std::move(conn));
+
+        return {{"success", true}, {"accepted", accept}};
+    }
+
 private:
     std::shared_ptr<MySQLPool> db_;
 };

@@ -166,6 +166,80 @@ public:
         return jwt_.verify(token);
     }
 
+    /// 获取用户信息
+    json getProfile(int64_t userId) {
+        auto conn = db_->acquire(3000);
+        if (!conn || !conn->valid()) return {{"success", false}, {"message", "db error"}};
+
+        auto result = conn->query("SELECT id, username, nickname, avatar, created_at FROM users WHERE id=" + std::to_string(userId));
+        db_->release(std::move(conn));
+
+        if (!result || mysql_num_rows(result.get()) == 0) {
+            return {{"success", false}, {"message", "user not found"}};
+        }
+
+        MYSQL_ROW row = mysql_fetch_row(result.get());
+        return {
+            {"success", true},
+            {"userId", std::stoll(row[0])},
+            {"username", row[1]},
+            {"nickname", row[2] ? row[2] : ""},
+            {"avatar", row[3] ? row[3] : ""},
+            {"createdAt", row[4] ? row[4] : ""}
+        };
+    }
+
+    /// 修改用户信息
+    json updateProfile(int64_t userId, const std::string& nickname, const std::string& avatar) {
+        auto conn = db_->acquire(3000);
+        if (!conn || !conn->valid()) return {{"success", false}, {"message", "db error"}};
+
+        std::string sql = "UPDATE users SET";
+        bool hasField = false;
+        if (!nickname.empty()) {
+            sql += " nickname='" + conn->escape(nickname) + "'";
+            hasField = true;
+        }
+        if (!avatar.empty()) {
+            if (hasField) sql += ",";
+            sql += " avatar='" + conn->escape(avatar) + "'";
+            hasField = true;
+        }
+        if (!hasField) return {{"success", false}, {"message", "nothing to update"}};
+
+        sql += " WHERE id=" + std::to_string(userId);
+        conn->execute(sql);
+        db_->release(std::move(conn));
+        return {{"success", true}};
+    }
+
+    /// 搜索用户（按用户名模糊搜索）
+    json searchUsers(const std::string& keyword) {
+        if (keyword.empty() || keyword.size() < 2) {
+            return {{"success", false}, {"message", "keyword too short (min 2 chars)"}};
+        }
+        auto conn = db_->acquire(3000);
+        if (!conn || !conn->valid()) return {{"success", false}, {"message", "db error"}};
+
+        std::string escaped = conn->escape(keyword);
+        auto result = conn->query("SELECT id, username, nickname, avatar FROM users WHERE username LIKE '%" + escaped + "%' OR nickname LIKE '%" + escaped + "%' LIMIT 20");
+        db_->release(std::move(conn));
+
+        json users = json::array();
+        if (result) {
+            MYSQL_ROW row;
+            while ((row = mysql_fetch_row(result.get()))) {
+                users.push_back({
+                    {"userId", std::stoll(row[0])},
+                    {"username", row[1]},
+                    {"nickname", row[2] ? row[2] : ""},
+                    {"avatar", row[3] ? row[3] : ""}
+                });
+            }
+        }
+        return {{"success", true}, {"users", users}};
+    }
+
     /** @brief 获取内部 JWT 实例的引用，供外部直接使用 JWT 功能 */
     JWT& jwt() { return jwt_; }
 
