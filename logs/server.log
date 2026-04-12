@@ -3,96 +3,72 @@ WARNING: MYSQL_OPT_RECONNECT is deprecated and will be removed in a future versi
 WARNING: MYSQL_OPT_RECONNECT is deprecated and will be removed in a future version.
 WARNING: MYSQL_OPT_RECONNECT is deprecated and will be removed in a future version.
 WARNING: MYSQL_OPT_RECONNECT is deprecated and will be removed in a future version.
-[INFO]2026/04/13 00:20:34EventLoop 0x7f3a3868bd30 start looping 
+[INFO]2026/04/13 00:26:22EventLoop 0x7f4d216acd30 start looping 
 
-[INFO]2026/04/13 00:20:34EventLoop 0x7f3a37e8ad30 start looping 
+[INFO]2026/04/13 00:26:22EventLoop 0x7f4d20eabd30 start looping 
 
-[INFO]2026/04/13 00:20:34EventLoop 0x7f3a37689d30 start looping 
+[INFO]2026/04/13 00:26:22EventLoop 0x7f4d1bffed30 start looping 
 
-[INFO]2026/04/13 00:20:34EventLoop 0x7f3a36e88d30 start looping 
+[INFO]2026/04/13 00:26:22EventLoop 0x7f4d1b7fdd30 start looping 
 
-[INFO]2026/04/13 00:20:34EventLoop 0x7f3a36687d30 start looping 
+[INFO]2026/04/13 00:26:22EventLoop 0x7f4d1affcd30 start looping 
 
-[INFO]2026/04/13 00:20:34EventLoop 0x7f3a35e86d30 start looping 
+[INFO]2026/04/13 00:26:22EventLoop 0x7f4d1a7fbd30 start looping 
 
-[INFO]2026/04/13 00:20:34EventLoop 0x7f3a35685d30 start looping 
+[INFO]2026/04/13 00:26:22EventLoop 0x7f4d19ffad30 start looping 
 
-[INFO]2026/04/13 00:20:34EventLoop 0x7f3a34e84d30 start looping 
+[INFO]2026/04/13 00:26:22EventLoop 0x7f4d197f9d30 start looping 
 
 === muduo-im ===
 HTTP API: http://localhost:8080
 WebSocket: ws://localhost:9090/ws?token=xxx
-[INFO]2026/04/13 00:20:34EventLoop 0x7ffe48325de0 start looping 
+[INFO]2026/04/13 00:26:22EventLoop 0x7ffdd1e78750 start looping 
 
-[INFO]2026/04/13 00:20:35Channel::handleEvent fd=5 revents=1
-[INFO]2026/04/13 00:20:35Channel::handleEvent fd=18 revents=1
-[INFO]2026/04/13 00:20:35Channel::handleEvent fd=21 revents=1
-[INFO]2026/04/13 00:20:35Channel::handleEvent fd=24 revents=1
-[INFO]2026/04/13 00:20:35Channel::handleEvent fd=27 revents=1
-[INFO]2026/04/13 00:20:35Channel::handleEvent fd=30 revents=1
-[INFO]2026/04/13 00:20:35Channel::handleEvent fd=33 revents=1
-[INFO]2026/04/13 00:20:35Channel::handleEvent fd=36 revents=1
-[INFO]2026/04/13 00:20:35Channel::handleEvent fd=39 revents=1
-[INFO]2026/04/13 00:20:36Channel::handleEvent fd=5 revents=1
-[INFO]2026/04/13 00:20:36Channel::handleEvent fd=18 revents=1
-[INFO]2026/04/13 00:20:36Channel::handleEvent fd=21 revents=1
-[INFO]2026/04/13 00:20:36Channel::handleEvent fd=24 revents=1
-[INFO]2026/04/13 00:20:36Channel::handleEvent fd=27 revents=1
-[INFO]2026/04/13 00:20:36Channel::handleEvent fd=30 revents=1
-[INFO]2026/04/13 00:20:36Channel::handleEvent fd=33 revents=1
-[INFO]2026/04/13 00:20:36Channel::handleEvent fd=36 revents=1
-[INFO]2026/04/13 00:20:36Channel::handleEvent fd=39 revents=1
-[INFO]2026/04/13 00:20:37Channel::handleEvent fd=5 revents=1
-[INFO]2026/04/13 00:20:37Channel::handleEvent fd=18 revents=1
-[INFO]2026/04/13 00:20:37Channel::handleEvent fd=21 revents=1
-[INFO]2026/04/13 00:20:37Channel::handleEvent fd=24 revents=1
-[INFO]2026/04/13 00:20:37Channel::handleEvent fd=27 revents=1
-[INFO]2026/04/13 00:20:37Channel::handleEvent fd=30 revents=1
-[INFO]2026/04/13 00:20:37Channel::handleEvent fd=33 revents=1
-[INFO]2026/04/13 00:20:37Channel::handleEvent fd=36 revents=1
-[INFO]2026/04/13 00:20:37Channel::handleEvent fd=39 revents=1
-[INFO]2026/04/13 00:20:38Channel::handleEvent fd=5 revents=1
-[INFO]2026/04/13 00:20:38Channel::handleEvent fd=18 revents=1
-[INFO]2026/04/13 00:20:38Channel::handleEvent fd=21 revents=1
-[INFO]2026/04/13 00:20:38Channel::handleEvent fd=24 revents=1
-[INFO]2026/04/13 00:20:38Channel::handleEvent fd=27 revents=1
-[INFO]2026/04/13 00:20:38Channel::handleEvent fd=30 revents=1
-[INFO]2026/04/13 00:20:38Channel::handleEvent fd=33 revents=1
-[INFO]2026/04/13 00:20:38Channel::handleEvent fd=36 revents=1
-[INFO]2026/04/13 00:20:38Channel::handleEvent fd=39 revents=1
-[INFO]2026/04/13 00:20:39Channel::handleEvent fd=5 revents=1
-[INFO]2026/04/13 00:20:39Channel::handleEvent fd=18 revents=1
-[INFO]2026/04/13 00:20:39Channel::handleEvent fd=21 revents=1
-[INFO]2026/04/13 00:20:39Channel::handleEvent fd=24 revents=1
-[INFO]2026/04/13 00:20:39Channel::handleEvent fd=27 revents=1
-[INFO]2026/04/13 00:20:39Channel::handleEvent fd=30 revents=1
-[INFO]2026/04/13 00:20:39Channel::handleEvent fd=33 revents=1
-[INFO]2026/04/13 00:20:39Channel::handleEvent fd=36 revents=1
-[INFO]2026/04/13 00:20:39Channel::handleEvent fd=39 revents=1
-[INFO]2026/04/13 00:20:40Channel::handleEvent fd=5 revents=1
-[INFO][INFO]2026/04/13 00:20:40Channel::handleEvent fd=18 revents=1
-2026/04/13 00:20:40Channel::handleEvent fd=21 revents=1
-[INFO]2026/04/13 00:20:40Channel::handleEvent fd=24 revents=1
-[INFO]2026/04/13 00:20:40Channel::handleEvent fd=27 revents=1
-[INFO]2026/04/13 00:20:40Channel::handleEvent fd=30 revents=1
-[INFO]2026/04/13 00:20:40Channel::handleEvent fd=33 revents=1
-[INFO]2026/04/13 00:20:40Channel::handleEvent fd=36 revents=1
-[INFO]2026/04/13 00:20:40Channel::handleEvent fd=39 revents=1
-[INFO]2026/04/13 00:20:41Channel::handleEvent fd=5 revents=1
-[INFO]2026/04/13 00:20:41Channel::handleEvent fd=18 revents=1
-[INFO]2026/04/13 00:20:41Channel::handleEvent fd=21 revents=1
-[INFO]2026/04/13 00:20:41Channel::handleEvent fd=24 revents=1
-[INFO]2026/04/13 00:20:41Channel::handleEvent fd=27 revents=1
-[INFO]2026/04/13 00:20:41Channel::handleEvent fd=30 revents=1
-[INFO]2026/04/13 00:20:41Channel::handleEvent fd=33 revents=1
-[INFO]2026/04/13 00:20:41Channel::handleEvent fd=36 revents=1
-[INFO]2026/04/13 00:20:41Channel::handleEvent fd=39 revents=1
-[INFO]2026/04/13 00:20:42Channel::handleEvent fd=5 revents=1
-[INFO]2026/04/13 00:20:42Channel::handleEvent fd=18 revents=1
-[INFO]2026/04/13 00:20:42Channel::handleEvent fd=21 revents=1
-[INFO]2026/04/13 00:20:42Channel::handleEvent fd=24 revents=1
-[INFO]2026/04/13 00:20:42Channel::handleEvent fd=27 revents=1
-[INFO]2026/04/13 00:20:42Channel::handleEvent fd=30 revents=1
-[INFO]2026/04/13 00:20:42Channel::handleEvent fd=33 revents=1
-[INFO]2026/04/13 00:20:42Channel::handleEvent fd=36 revents=1
-[INFO]2026/04/13 00:20:42Channel::handleEvent fd=39 revents=1
+[INFO]2026/04/13 00:26:23Channel::handleEvent fd=5 revents=1
+[INFO]2026/04/13 00:26:23Channel::handleEvent fd=18 revents=1
+[INFO]2026/04/13 00:26:23Channel::handleEvent fd=21 revents=1
+[INFO]2026/04/13 00:26:23Channel::handleEvent fd=24 revents=1
+[INFO]2026/04/13 00:26:23Channel::handleEvent fd=27 revents=1
+[INFO]2026/04/13 00:26:23Channel::handleEvent fd=30 revents=1
+[INFO]2026/04/13 00:26:23Channel::handleEvent fd=33 revents=1
+[INFO]2026/04/13 00:26:23Channel::handleEvent fd=36 revents=1
+[INFO]2026/04/13 00:26:23Channel::handleEvent fd=39 revents=1
+[INFO]2026/04/13 00:26:24Channel::handleEvent fd=5 revents=1
+[INFO]2026/04/13 00:26:24Channel::handleEvent fd=18 revents=1
+[INFO]2026/04/13 00:26:24Channel::handleEvent fd=21 revents=1
+[INFO]2026/04/13 00:26:24Channel::handleEvent fd=24 revents=1
+[INFO]2026/04/13 00:26:24Channel::handleEvent fd=27 revents=1
+[INFO]2026/04/13 00:26:24Channel::handleEvent fd=30 revents=1
+[INFO]2026/04/13 00:26:24Channel::handleEvent fd=33 revents=1
+[INFO]2026/04/13 00:26:24Channel::handleEvent fd=36 revents=1
+[INFO]2026/04/13 00:26:24Channel::handleEvent fd=39 revents=1
+[INFO]2026/04/13 00:26:24Channel::handleEvent fd=7 revents=1
+[INFO]2026/04/13 00:26:24Channel::handleEvent fd=29 revents=1
+[INFO]2026/04/13 00:26:24Channel::handleEvent fd=40 revents=1
+[INFO]2026/04/13 00:26:25Channel::handleEvent fd=5 revents=1
+[INFO]2026/04/13 00:26:25Channel::handleEvent fd=18 revents=1
+[INFO]2026/04/13 00:26:25Channel::handleEvent fd=21 revents=1
+[INFO]2026/04/13 00:26:25Channel::handleEvent fd=24 revents=1
+[INFO]2026/04/13 00:26:25Channel::handleEvent fd=27 revents=1
+[INFO]2026/04/13 00:26:25Channel::handleEvent fd=30 revents=1
+[INFO]2026/04/13 00:26:25Channel::handleEvent fd=33 revents=1
+[INFO]2026/04/13 00:26:25Channel::handleEvent fd=36 revents=1
+[INFO]2026/04/13 00:26:25Channel::handleEvent fd=39 revents=1
+[INFO]2026/04/13 00:26:26Channel::handleEvent fd=5 revents=1
+[INFO]2026/04/13 00:26:26Channel::handleEvent fd=18 revents=1
+[INFO]2026/04/13 00:26:26Channel::handleEvent fd=21 revents=1
+[INFO]2026/04/13 00:26:26Channel::handleEvent fd=24 revents=1
+[INFO]2026/04/13 00:26:26Channel::handleEvent fd=27 revents=1
+[INFO]2026/04/13 00:26:26Channel::handleEvent fd=30 revents=1
+[INFO]2026/04/13 00:26:26Channel::handleEvent fd=33 revents=1
+[INFO]2026/04/13 00:26:26Channel::handleEvent fd=36 revents=1
+[INFO]2026/04/13 00:26:26Channel::handleEvent fd=39 revents=1
+[INFO]2026/04/13 00:26:27Channel::handleEvent fd=5 revents=1
+[INFO]2026/04/13 00:26:27Channel::handleEvent fd=18 revents=1
+[INFO]2026/04/13 00:26:27Channel::handleEvent fd=21 revents=1
+[INFO]2026/04/13 00:26:27Channel::handleEvent fd=24 revents=1
+[INFO]2026/04/13 00:26:27Channel::handleEvent fd=27 revents=1
+[INFO]2026/04/13 00:26:27Channel::handleEvent fd=30 revents=1
+[INFO]2026/04/13 00:26:27Channel::handleEvent fd=33 revents=1
+[INFO]2026/04/13 00:26:27Channel::handleEvent fd=36 revents=1
+[INFO]2026/04/13 00:26:27Channel::handleEvent fd=39 revents=1

@@ -676,6 +676,9 @@ private:
             return;
         }
 
+        // 先刷 Redis 消息队列到 MySQL，确保消息已入库
+        flushMessageQueue();
+
         bool ok = messageService_.recallMessage(msgId, fromUserId);
         if (!ok) {
             session->sendText(Protocol::makeError("recall failed (timeout or not your message)"));
