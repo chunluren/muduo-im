@@ -48,6 +48,7 @@ inline const char* FILE_MSG    = "file_msg";   ///< 文件消息（C->S 发送 /
 inline const char* RECALL      = "recall";     ///< 消息撤回通知（C->S 请求撤回 / S->C 通知撤回）
 inline const char* READ_ACK    = "read_ack";   ///< 已读回执（C->S 发送，标记消息已读位置）
 inline const char* TYPING      = "typing";     ///< 正在输入提示（C->S 发送 / S->C 转发）
+inline const char* UNREAD_SYNC = "unread_sync"; ///< 未读消息同步（S->C，用户上线时推送各好友未读计数）
 /** @} */
 
 /**

@@ -1,0 +1,43 @@
+graph TB
+    subgraph Client["客户端"]
+        Browser["浏览器 (index.html)"]
+    end
+
+    subgraph Server["muduo-im 服务端"]
+        subgraph HTTP["HTTP Server :8080"]
+            REST["REST API"]
+            Static["静态文件服务"]
+            Upload["文件上传"]
+        end
+
+        subgraph WS["WebSocket Server :9090"]
+            Auth["JWT 握手验证"]
+            Router["消息路由"]
+        end
+
+        subgraph Services["业务层"]
+            US["UserService<br/>注册/登录/JWT"]
+            FS["FriendService<br/>好友申请/管理"]
+            GS["GroupService<br/>群组/公告/踢人"]
+            MS["MessageService<br/>存储/搜索/撤回"]
+            OM["OnlineManager<br/>在线状态"]
+        end
+    end
+
+    subgraph Storage["存储层"]
+        MySQL["MySQL<br/>用户/消息/好友/群组"]
+        Redis["Redis<br/>在线状态/未读计数<br/>消息队列"]
+    end
+
+    Browser -->|"fetch API"| REST
+    Browser -->|"WebSocket"| Auth
+    REST --> US
+    REST --> FS
+    REST --> GS
+    REST --> MS
+    Upload -->|"Multipart"| Static
+    Auth --> Router
+    Router -->|"msg/group_msg/recall/typing"| Services
+    Services --> MySQL
+    Services --> Redis
+    OM --> Redis

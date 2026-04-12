@@ -1055,6 +1055,418 @@ body {
 .history-loading.show {
   display: block;
 }
+
+/* Message search */
+.msg-search-wrapper {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  margin-left: 10px;
+}
+
+.btn-msg-search {
+  background: none;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  padding: 4px 8px;
+  font-size: 14px;
+  cursor: pointer;
+  color: #666;
+  transition: all 0.3s;
+}
+
+.btn-msg-search:hover {
+  border-color: #4A90D9;
+  color: #4A90D9;
+}
+
+.msg-search-input {
+  display: none;
+  width: 200px;
+  padding: 5px 10px;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  font-size: 13px;
+  outline: none;
+  margin-left: 6px;
+}
+
+.msg-search-input.show {
+  display: inline-block;
+}
+
+.msg-search-input:focus {
+  border-color: #4A90D9;
+}
+
+.msg-search-results {
+  display: none;
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  background: #fff;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+  max-height: 300px;
+  overflow-y: auto;
+  z-index: 100;
+  margin-top: 4px;
+  list-style: none;
+}
+
+.msg-search-results.show {
+  display: block;
+}
+
+.msg-search-result-item {
+  padding: 8px 12px;
+  cursor: pointer;
+  border-bottom: 1px solid #f0f0f0;
+  transition: background 0.2s;
+}
+
+.msg-search-result-item:last-child {
+  border-bottom: none;
+}
+
+.msg-search-result-item:hover {
+  background: #f5f8ff;
+}
+
+.msg-search-result-item .sr-from {
+  font-size: 12px;
+  color: #4A90D9;
+  font-weight: 500;
+}
+
+.msg-search-result-item .sr-content {
+  font-size: 13px;
+  color: #333;
+  margin-top: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.msg-search-result-item .sr-time {
+  font-size: 11px;
+  color: #aaa;
+  margin-top: 2px;
+}
+
+/* Emoji picker */
+.btn-emoji {
+  padding: 10px 14px;
+  background: none;
+  border: 1px solid #ddd;
+  border-radius: 20px;
+  font-size: 18px;
+  cursor: pointer;
+  transition: all 0.3s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+}
+
+.btn-emoji:hover {
+  border-color: #4A90D9;
+  background: #f0f6ff;
+}
+
+.btn-emoji:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.emoji-picker {
+  display: none;
+  position: absolute;
+  bottom: 100%;
+  left: 0;
+  background: #fff;
+  border: 1px solid #ddd;
+  border-radius: 8px;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.15);
+  padding: 10px;
+  margin-bottom: 6px;
+  z-index: 100;
+  width: 280px;
+}
+
+.emoji-picker.show {
+  display: block;
+}
+
+.emoji-grid {
+  display: grid;
+  grid-template-columns: repeat(8, 1fr);
+  gap: 4px;
+}
+
+.emoji-grid span {
+  font-size: 22px;
+  cursor: pointer;
+  text-align: center;
+  padding: 4px;
+  border-radius: 4px;
+  transition: background 0.2s;
+  line-height: 1.2;
+}
+
+.emoji-grid span:hover {
+  background: #e8f0fe;
+}
+
+/* Image preview in chat */
+.chat-image-preview {
+  max-width: 300px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: opacity 0.2s;
+}
+
+.chat-image-preview:hover {
+  opacity: 0.9;
+}
+
+/* Image lightbox */
+.image-lightbox {
+  position: fixed;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background: rgba(0,0,0,0.85);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2000;
+  cursor: pointer;
+}
+
+.image-lightbox img {
+  max-width: 90vw;
+  max-height: 90vh;
+  border-radius: 4px;
+}
+
+/* Reply/quote */
+.reply-bar {
+  display: none;
+  padding: 8px 20px;
+  background: #f5f5f5;
+  border-top: 1px solid #e0e0e0;
+  font-size: 13px;
+  color: #666;
+  align-items: center;
+  gap: 8px;
+}
+
+.reply-bar.show {
+  display: flex;
+}
+
+.reply-bar .reply-preview {
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.reply-bar .reply-cancel {
+  background: none;
+  border: none;
+  font-size: 16px;
+  cursor: pointer;
+  color: #999;
+  padding: 0 4px;
+}
+
+.reply-bar .reply-cancel:hover {
+  color: #e74c3c;
+}
+
+.btn-reply {
+  display: none;
+  padding: 2px 6px;
+  font-size: 11px;
+  background: #f5f5f5;
+  border: 1px solid #ddd;
+  border-radius: 3px;
+  cursor: pointer;
+  color: #999;
+  white-space: nowrap;
+  transition: all 0.2s;
+  flex-shrink: 0;
+  margin-left: 4px;
+}
+
+.btn-reply:hover {
+  background: #4A90D9;
+  color: #fff;
+  border-color: #4A90D9;
+}
+
+.message-item:hover .btn-reply {
+  display: inline-block;
+}
+
+.message-quote {
+  background: rgba(0,0,0,0.05);
+  border-left: 3px solid #4A90D9;
+  padding: 4px 8px;
+  margin-bottom: 6px;
+  border-radius: 0 4px 4px 0;
+  font-size: 12px;
+  color: #888;
+  max-width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.message-item.own .message-quote {
+  background: rgba(255,255,255,0.15);
+  border-left-color: rgba(255,255,255,0.5);
+  color: rgba(255,255,255,0.8);
+}
+
+/* Message bubble wrapper for non-own messages (for reply button) */
+.message-item.other .message-bubble-wrapper {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 60%;
+}
+
+.message-item.other .message-bubble-wrapper .message-bubble {
+  max-width: 100%;
+}
+
+/* Group management */
+.group-announcement-bar {
+  display: none;
+  padding: 8px 20px;
+  background: #fff8e6;
+  border-bottom: 1px solid #f0e0b0;
+  font-size: 13px;
+  color: #8a6d3b;
+  align-items: center;
+  gap: 6px;
+}
+
+.group-announcement-bar.show {
+  display: flex;
+}
+
+.group-announcement-bar .ann-icon {
+  flex-shrink: 0;
+}
+
+.group-announcement-bar .ann-text {
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.btn-group-manage {
+  padding: 4px 10px;
+  font-size: 12px;
+  background: none;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  cursor: pointer;
+  color: #666;
+  transition: all 0.3s;
+  margin-left: 6px;
+}
+
+.btn-group-manage:hover {
+  border-color: #4A90D9;
+  color: #4A90D9;
+}
+
+.btn-group-leave-header {
+  padding: 4px 10px;
+  font-size: 12px;
+  background: none;
+  border: 1px solid #e67e22;
+  border-radius: 4px;
+  cursor: pointer;
+  color: #e67e22;
+  transition: all 0.3s;
+  margin-left: 6px;
+}
+
+.btn-group-leave-header:hover {
+  background: #e67e22;
+  color: #fff;
+}
+
+/* Group management panel (modal) */
+.group-mgmt-panel .member-list {
+  list-style: none;
+  max-height: 300px;
+  overflow-y: auto;
+  margin-top: 8px;
+}
+
+.group-mgmt-panel .member-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 0;
+  border-bottom: 1px solid #f0f0f0;
+}
+
+.group-mgmt-panel .member-item:last-child {
+  border-bottom: none;
+}
+
+.group-mgmt-panel .member-name {
+  font-size: 14px;
+  color: #333;
+}
+
+.group-mgmt-panel .member-name .owner-tag {
+  font-size: 11px;
+  color: #e67e22;
+  margin-left: 4px;
+}
+
+.group-mgmt-panel .btn-kick {
+  padding: 3px 8px;
+  font-size: 11px;
+  background: none;
+  border: 1px solid #e74c3c;
+  border-radius: 3px;
+  cursor: pointer;
+  color: #e74c3c;
+  transition: all 0.2s;
+}
+
+.group-mgmt-panel .btn-kick:hover {
+  background: #e74c3c;
+  color: #fff;
+}
+
+.group-mgmt-panel .ann-textarea {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  font-size: 14px;
+  resize: vertical;
+  min-height: 60px;
+  outline: none;
+  font-family: inherit;
+}
+
+.group-mgmt-panel .ann-textarea:focus {
+  border-color: #4A90D9;
+}
 </style>
 </head>
 <body>
@@ -1163,16 +1575,40 @@ body {
         <span id="chatTargetName">选择一个聊天</span>
         <span id="wsStatus" class="ws-status disconnected">未连接</span>
       </span>
-      <button id="deleteFriendBtn" class="delete-friend-btn" style="display:none;" onclick="doDeleteFriend()">删除好友</button>
+      <span style="display:flex;align-items:center;">
+        <div class="msg-search-wrapper" id="msgSearchWrapper">
+          <button class="btn-msg-search" onclick="toggleMsgSearch()" title="搜索消息">&#x1F50D;</button>
+          <input type="text" class="msg-search-input" id="msgSearchInput" placeholder="搜索消息..." oninput="onMsgSearchInput()">
+          <ul class="msg-search-results" id="msgSearchResults"></ul>
+        </div>
+        <button id="deleteFriendBtn" class="delete-friend-btn" style="display:none;" onclick="doDeleteFriend()">删除好友</button>
+        <button id="groupManageBtn" class="btn-group-manage" style="display:none;" onclick="openGroupManageModal()">&#x2699;</button>
+        <button id="groupLeaveHeaderBtn" class="btn-group-leave-header" style="display:none;" onclick="doLeaveGroupFromHeader()">退出群组</button>
+      </span>
+    </div>
+    <div class="group-announcement-bar" id="groupAnnouncementBar">
+      <span class="ann-icon">&#x1F4E2;</span>
+      <span class="ann-text" id="groupAnnouncementText"></span>
     </div>
     <div class="typing-indicator" id="typingIndicator"></div>
     <div class="chat-messages" id="chatMessages">
       <div class="history-loading" id="historyLoading">加载更多消息...</div>
       <div class="chat-empty" id="chatEmpty">选择一个好友或群组开始聊天</div>
     </div>
+    <div class="reply-bar" id="replyBar">
+      <span>回复:</span>
+      <span class="reply-preview" id="replyPreview"></span>
+      <button class="reply-cancel" onclick="cancelReply()">&times;</button>
+    </div>
     <div class="chat-input-area">
       <input type="file" id="fileInput" style="display:none" onchange="handleFileSelected(event)">
       <button class="btn-file" id="btnFile" disabled onclick="document.getElementById('fileInput').click()" title="发送文件">&#x1F4CE;</button>
+      <div style="position:relative;">
+        <button class="btn-emoji" id="btnEmoji" disabled onclick="toggleEmojiPicker()">&#x1F60A;</button>
+        <div class="emoji-picker" id="emojiPicker">
+          <div class="emoji-grid" id="emojiGrid"></div>
+        </div>
+      </div>
       <div class="chat-input-wrapper">
         <input type="text" id="msgInput" placeholder="输入消息..." maxlength="10000" disabled onkeydown="if(event.key==='Enter')sendMessage()" oninput="onMsgInput()">
         <div class="char-counter" id="charCounter"></div>
@@ -1247,6 +1683,26 @@ body {
   </div>
 </div>
 
+<!-- Group Management Modal -->
+<div id="groupManageModal" class="modal-overlay" style="display:none;" onclick="if(event.target===this)closeGroupManageModal()">
+  <div class="modal-card group-mgmt-panel">
+    <h3 id="groupManageTitle">群组管理</h3>
+    <div class="form-group">
+      <label>群公告</label>
+      <textarea class="ann-textarea" id="groupAnnTextarea" placeholder="输入群公告..."></textarea>
+    </div>
+    <div class="modal-actions">
+      <button class="btn-modal primary" onclick="saveGroupAnnouncement()">保存公告</button>
+    </div>
+    <hr class="profile-section-divider">
+    <div class="profile-section-title">成员列表</div>
+    <ul class="member-list" id="groupMemberList"></ul>
+    <div class="modal-actions">
+      <button class="btn-modal cancel" onclick="closeGroupManageModal()">关闭</button>
+    </div>
+  </div>
+</div>
+
 <script>
 // ===== Config =====
 const CONFIG = {
@@ -1276,6 +1732,9 @@ let typingDebounceTimer = null;
 let typingDisplayTimer = null;
 let isLoadingHistory = false;
 let historyFullyLoaded = {}; // key: 'friend_id' or 'group_id', true if no more old messages
+let msgSearchDebounceTimer = null;
+let replyingTo = null; // { msgId, content, from }
+let groupAnnouncements = {}; // key: groupId, value: string
 
 // ===== UUID =====
 function generateUUID() {
@@ -1393,6 +1852,8 @@ function doLogout() {
   unreadCounts = {};
   messageCache = {};
   historyFullyLoaded = {};
+  groupAnnouncements = {};
+  replyingTo = null;
   showAuthPage();
 }
 
@@ -1749,6 +2210,7 @@ async function selectChat(type, id, name) {
       fileSize: m.fileSize,
       recalled: m.recalled || false,
       read: m.read || false,
+      replyTo: m.replyTo,
       timestamp: m.timestamp
     }));
     renderMessages();
@@ -1773,14 +2235,25 @@ function renderChatArea() {
   const msgInput = document.getElementById('msgInput');
   const btnSend = document.getElementById('btnSend');
   const btnFile = document.getElementById('btnFile');
+  const btnEmoji = document.getElementById('btnEmoji');
   const chatEmpty = document.getElementById('chatEmpty');
+  const groupManageBtn = document.getElementById('groupManageBtn');
+  const groupLeaveHeaderBtn = document.getElementById('groupLeaveHeaderBtn');
+  const annBar = document.getElementById('groupAnnouncementBar');
+
+  // Reset reply state when switching chats
+  cancelReply();
 
   if (!currentChat) {
     headerName.textContent = '选择一个聊天';
     deleteBtn.style.display = 'none';
+    groupManageBtn.style.display = 'none';
+    groupLeaveHeaderBtn.style.display = 'none';
+    annBar.classList.remove('show');
     msgInput.disabled = true;
     btnSend.disabled = true;
     btnFile.disabled = true;
+    btnEmoji.disabled = true;
     chatEmpty.style.display = 'flex';
     document.getElementById('chatMessages').querySelectorAll('.message-item').forEach(el => el.remove());
     return;
@@ -1788,9 +2261,33 @@ function renderChatArea() {
 
   headerName.textContent = currentChat.name + (currentChat.type === 'group' ? ' (群组)' : '');
   deleteBtn.style.display = currentChat.type === 'friend' ? 'inline-block' : 'none';
+
+  // Group management buttons
+  if (currentChat.type === 'group') {
+    const group = groups.find(g => g.groupId === currentChat.id);
+    const isOwner = group && (group.ownerId === userId || group.ownerId === String(userId));
+    groupManageBtn.style.display = isOwner ? 'inline-block' : 'none';
+    groupLeaveHeaderBtn.style.display = !isOwner ? 'inline-block' : 'none';
+
+    // Show announcement
+    const ann = groupAnnouncements[currentChat.id];
+    if (ann) {
+      document.getElementById('groupAnnouncementText').textContent = ann;
+      annBar.classList.add('show');
+    } else {
+      annBar.classList.remove('show');
+      loadGroupAnnouncement(currentChat.id);
+    }
+  } else {
+    groupManageBtn.style.display = 'none';
+    groupLeaveHeaderBtn.style.display = 'none';
+    annBar.classList.remove('show');
+  }
+
   msgInput.disabled = false;
   btnSend.disabled = false;
   btnFile.disabled = false;
+  btnEmoji.disabled = false;
   chatEmpty.style.display = 'none';
   msgInput.focus();
 }
@@ -1850,32 +2347,51 @@ function appendMessageToDOM(msg) {
   // Build bubble content
   let bubbleContent = '';
   if (msg.fileUrl) {
-    // File message
-    const fname = escapeHtml(msg.filename || '文件');
-    const fsize = msg.fileSize ? formatFileSize(msg.fileSize) : '';
-    bubbleContent = `<a class="file-msg-link" href="${escapeHtml(msg.fileUrl)}" target="_blank" download>
-      <span class="file-msg-icon">&#x1F4C4;</span>
-      <span class="file-msg-info">
-        <span class="file-msg-name">${fname}</span>
-        ${fsize ? '<span class="file-msg-size">' + fsize + '</span>' : ''}
-      </span>
-    </a>`;
+    const fname = msg.filename || '文件';
+    const fnLower = fname.toLowerCase();
+    const isImage = /\.(jpg|jpeg|png|gif|webp)$/.test(fnLower);
+    if (isImage) {
+      bubbleContent = `<img class="chat-image-preview" src="${escapeHtml(msg.fileUrl)}" alt="${escapeHtml(fname)}" onclick="openImageLightbox('${escapeHtml(msg.fileUrl)}')">`;
+    } else {
+      const fsize = msg.fileSize ? formatFileSize(msg.fileSize) : '';
+      bubbleContent = `<a class="file-msg-link" href="${escapeHtml(msg.fileUrl)}" target="_blank" download>
+        <span class="file-msg-icon">&#x1F4C4;</span>
+        <span class="file-msg-info">
+          <span class="file-msg-name">${escapeHtml(fname)}</span>
+          ${fsize ? '<span class="file-msg-size">' + fsize + '</span>' : ''}
+        </span>
+      </a>`;
+    }
   } else {
     bubbleContent = escapeHtml(msg.content);
   }
 
+  // Build quoted message if this is a reply
+  let quoteHtml = '';
+  if (msg.replyTo) {
+    const quoted = findMessageById(msg.replyTo);
+    if (quoted) {
+      const qContent = quoted.recalled ? '[消息已撤回]' : (quoted.content || '文件');
+      quoteHtml = `<div class="message-quote">${escapeHtml(qContent.substring(0, 60))}${qContent.length > 60 ? '...' : ''}</div>`;
+    } else {
+      quoteHtml = `<div class="message-quote">[引用消息]</div>`;
+    }
+  }
+
   // Recall button for own messages sent within 2 minutes
   let recallBtn = '';
-  if (isOwn && msg.msgId && msg.timestamp && !msg.fileUrl) {
+  if (isOwn && msg.msgId && msg.timestamp) {
     const elapsed = Date.now() - (typeof msg.timestamp === 'number' ? msg.timestamp : parseInt(msg.timestamp));
     if (elapsed < 2 * 60 * 1000) {
       recallBtn = `<button class="btn-recall recallable" onclick="recallMessage('${msg.msgId}')">撤回</button>`;
     }
-  } else if (isOwn && msg.msgId && msg.timestamp && msg.fileUrl) {
-    const elapsed = Date.now() - (typeof msg.timestamp === 'number' ? msg.timestamp : parseInt(msg.timestamp));
-    if (elapsed < 2 * 60 * 1000) {
-      recallBtn = `<button class="btn-recall recallable" onclick="recallMessage('${msg.msgId}')">撤回</button>`;
-    }
+  }
+
+  // Reply button (for all non-recalled messages with msgId)
+  let replyBtn = '';
+  if (msg.msgId) {
+    const replyContent = escapeHtml((msg.content || '文件').substring(0, 40)).replace(/'/g, "\\'").replace(/"/g, '&quot;');
+    replyBtn = `<button class="btn-reply" onclick="event.stopPropagation();setReply('${msg.msgId}', '${replyContent}', ${msg.from})">回复</button>`;
   }
 
   // Read status for own messages
@@ -1889,12 +2405,12 @@ function appendMessageToDOM(msg) {
     ? '<div class="message-sender"><span class="friend-name-link" data-user-id="' + senderUserId + '" style="cursor:pointer;" onclick="showUserProfile(' + senderUserId + ', event)">' + escapeHtml(senderName) + '</span></div>'
     : '';
 
-  if (isOwn && recallBtn) {
+  if (isOwn) {
     div.innerHTML = `
       ${senderHtml}
       <div class="message-bubble-wrapper">
-        ${recallBtn}
-        <div class="message-bubble">${bubbleContent}</div>
+        ${recallBtn}${replyBtn}
+        <div class="message-bubble">${quoteHtml}${bubbleContent}</div>
       </div>
       <div class="message-time">${formatTime(msg.timestamp)}</div>
       ${readStatus}
@@ -1902,7 +2418,10 @@ function appendMessageToDOM(msg) {
   } else {
     div.innerHTML = `
       ${senderHtml}
-      <div class="message-bubble">${bubbleContent}</div>
+      <div class="message-bubble-wrapper">
+        <div class="message-bubble">${quoteHtml}${bubbleContent}</div>
+        ${replyBtn}
+      </div>
       <div class="message-time">${formatTime(msg.timestamp)}</div>
       ${readStatus}
     `;
@@ -1931,6 +2450,11 @@ function sendMessage() {
     msgId: msgId
   };
 
+  // Include replyTo if replying
+  if (replyingTo) {
+    msg.replyTo = replyingTo.msgId;
+  }
+
   ws.send(JSON.stringify(msg));
 
   // Add to local cache
@@ -1941,6 +2465,7 @@ function sendMessage() {
     from: userId,
     to: currentChat.id,
     content: content,
+    replyTo: replyingTo ? replyingTo.msgId : undefined,
     timestamp: Date.now()
   };
   messageCache[key].push(localMsg);
@@ -1951,6 +2476,7 @@ function sendMessage() {
   input.value = '';
   input.focus();
   updateCharCounter();
+  cancelReply();
 }
 
 // ===== WebSocket =====
@@ -2017,7 +2543,7 @@ function handleWsMessage(data) {
       const fromId = data.from;
       const key = 'friend_' + fromId;
       if (!messageCache[key]) messageCache[key] = [];
-      const msg = { msgId: data.msgId, from: fromId, to: data.to, content: data.content, timestamp: data.timestamp };
+      const msg = { msgId: data.msgId, from: fromId, to: data.to, content: data.content, replyTo: data.replyTo, timestamp: data.timestamp };
       messageCache[key].push(msg);
 
       if (currentChat && currentChat.type === 'friend' && currentChat.id == fromId) {
@@ -2037,7 +2563,7 @@ function handleWsMessage(data) {
       if (!messageCache[key]) messageCache[key] = [];
       // Skip own messages (already displayed locally)
       if (data.from == userId) break;
-      const msg = { msgId: data.msgId, from: data.from, to: groupId, content: data.content, timestamp: data.timestamp };
+      const msg = { msgId: data.msgId, from: data.from, to: groupId, content: data.content, replyTo: data.replyTo, timestamp: data.timestamp };
       messageCache[key].push(msg);
 
       if (currentChat && currentChat.type === 'group' && currentChat.id == groupId) {
@@ -2165,6 +2691,20 @@ function handleWsMessage(data) {
       const typingFromId = data.from;
       if (currentChat && currentChat.type === 'friend' && currentChat.id == typingFromId) {
         showTypingIndicator(currentChat.name);
+      }
+      break;
+    }
+    case 'unread_sync': {
+      // Sync unread counts on WebSocket connect
+      if (data.data && typeof data.data === 'object') {
+        for (const [uid, count] of Object.entries(data.data)) {
+          const key = 'friend_' + uid;
+          const c = parseInt(count) || 0;
+          if (c > 0) {
+            unreadCounts[key] = c;
+          }
+        }
+        renderFriendList();
       }
       break;
     }
@@ -2494,6 +3034,7 @@ async function onChatScroll() {
         fileSize: m.fileSize,
         recalled: m.recalled || false,
         read: m.read || false,
+        replyTo: m.replyTo,
         timestamp: m.timestamp
       }));
 
@@ -2571,9 +3112,285 @@ function escapeHtml(text) {
   return div.innerHTML;
 }
 
+// ===== Message Search =====
+function toggleMsgSearch() {
+  const input = document.getElementById('msgSearchInput');
+  const results = document.getElementById('msgSearchResults');
+  input.classList.toggle('show');
+  if (input.classList.contains('show')) {
+    input.focus();
+  } else {
+    input.value = '';
+    results.classList.remove('show');
+    results.innerHTML = '';
+  }
+}
+
+function onMsgSearchInput() {
+  if (msgSearchDebounceTimer) clearTimeout(msgSearchDebounceTimer);
+  msgSearchDebounceTimer = setTimeout(doMsgSearch, 500);
+}
+
+async function doMsgSearch() {
+  const keyword = document.getElementById('msgSearchInput').value.trim();
+  const results = document.getElementById('msgSearchResults');
+  if (keyword.length < 1) {
+    results.classList.remove('show');
+    results.innerHTML = '';
+    return;
+  }
+  try {
+    const data = await api('GET', '/api/messages/search?keyword=' + encodeURIComponent(keyword));
+    results.innerHTML = '';
+    const msgs = data.messages || data.results || data;
+    if (Array.isArray(msgs) && msgs.length > 0) {
+      msgs.forEach(m => {
+        const li = document.createElement('li');
+        li.className = 'msg-search-result-item';
+        const fromName = m.fromName || m.senderName || ('用户' + m.from);
+        li.innerHTML = `
+          <div class="sr-from">${escapeHtml(fromName)}</div>
+          <div class="sr-content">${escapeHtml(m.content || '')}</div>
+          <div class="sr-time">${formatTime(m.timestamp)}</div>
+        `;
+        li.onclick = () => {
+          // Navigate to the chat containing this message
+          if (m.groupId) {
+            const g = groups.find(g => g.groupId == m.groupId);
+            selectChat('group', parseInt(m.groupId), g ? g.name : '群组' + m.groupId);
+          } else {
+            const peerId = m.from == userId ? m.to : m.from;
+            const f = friends.find(f => f.userId == peerId);
+            selectChat('friend', parseInt(peerId), f ? (f.nickname || f.username) : '用户' + peerId);
+          }
+          // Close search
+          toggleMsgSearch();
+        };
+        results.appendChild(li);
+      });
+      results.classList.add('show');
+    } else {
+      results.innerHTML = '<li class="msg-search-result-item" style="cursor:default;color:#999;">无搜索结果</li>';
+      results.classList.add('show');
+    }
+  } catch (e) {
+    results.innerHTML = '<li class="msg-search-result-item" style="cursor:default;color:#e74c3c;">搜索失败: ' + escapeHtml(e.message) + '</li>';
+    results.classList.add('show');
+  }
+}
+
+// Close search results when clicking outside
+document.addEventListener('click', function(e) {
+  const wrapper = document.getElementById('msgSearchWrapper');
+  if (wrapper && !wrapper.contains(e.target)) {
+    const input = document.getElementById('msgSearchInput');
+    const results = document.getElementById('msgSearchResults');
+    if (input.classList.contains('show')) {
+      input.classList.remove('show');
+      input.value = '';
+      results.classList.remove('show');
+      results.innerHTML = '';
+    }
+  }
+});
+
+// ===== Emoji Picker =====
+const EMOJI_LIST = ['😀','😂','🤣','😊','😍','🥰','😘','😎','🤔','😢','😭','😡','🤮','👍','👎','❤️','🔥','💯','🎉','👏','🙏','💪','😱','🤯','🥳','😴','🤝','👀','✅'];
+
+function toggleEmojiPicker() {
+  const picker = document.getElementById('emojiPicker');
+  picker.classList.toggle('show');
+}
+
+function initEmojiGrid() {
+  const grid = document.getElementById('emojiGrid');
+  grid.innerHTML = '';
+  EMOJI_LIST.forEach(emoji => {
+    const span = document.createElement('span');
+    span.textContent = emoji;
+    span.onclick = (e) => {
+      e.stopPropagation();
+      insertEmoji(emoji);
+    };
+    grid.appendChild(span);
+  });
+}
+
+function insertEmoji(emoji) {
+  const input = document.getElementById('msgInput');
+  const start = input.selectionStart;
+  const end = input.selectionEnd;
+  const val = input.value;
+  input.value = val.substring(0, start) + emoji + val.substring(end);
+  input.selectionStart = input.selectionEnd = start + emoji.length;
+  input.focus();
+  updateCharCounter();
+  // Close picker after inserting
+  document.getElementById('emojiPicker').classList.remove('show');
+}
+
+// Close emoji picker when clicking outside
+document.addEventListener('click', function(e) {
+  const picker = document.getElementById('emojiPicker');
+  const btn = document.getElementById('btnEmoji');
+  if (picker && btn && !picker.contains(e.target) && !btn.contains(e.target)) {
+    picker.classList.remove('show');
+  }
+});
+
+// ===== Image Preview Lightbox =====
+function openImageLightbox(url) {
+  const overlay = document.createElement('div');
+  overlay.className = 'image-lightbox';
+  overlay.innerHTML = '<img src="' + escapeHtml(url) + '">';
+  overlay.onclick = () => overlay.remove();
+  document.body.appendChild(overlay);
+}
+
+// ===== Reply/Quote =====
+function setReply(msgId, contentPreview, fromId) {
+  replyingTo = { msgId, content: contentPreview, from: fromId };
+  const bar = document.getElementById('replyBar');
+  document.getElementById('replyPreview').textContent = contentPreview;
+  bar.classList.add('show');
+  document.getElementById('msgInput').focus();
+}
+
+function cancelReply() {
+  replyingTo = null;
+  const bar = document.getElementById('replyBar');
+  bar.classList.remove('show');
+  document.getElementById('replyPreview').textContent = '';
+}
+
+function findMessageById(msgId) {
+  for (const key in messageCache) {
+    const msgs = messageCache[key];
+    for (let i = 0; i < msgs.length; i++) {
+      if (msgs[i].msgId === msgId) return msgs[i];
+    }
+  }
+  return null;
+}
+
+// ===== Group Management =====
+async function loadGroupAnnouncement(groupId) {
+  try {
+    const data = await api('GET', '/api/groups/info?groupId=' + groupId);
+    if (data.success || data.announcement !== undefined) {
+      const ann = data.announcement || '';
+      groupAnnouncements[groupId] = ann;
+      if (currentChat && currentChat.type === 'group' && currentChat.id === groupId) {
+        const bar = document.getElementById('groupAnnouncementBar');
+        if (ann) {
+          document.getElementById('groupAnnouncementText').textContent = ann;
+          bar.classList.add('show');
+        } else {
+          bar.classList.remove('show');
+        }
+      }
+    }
+  } catch (e) {
+    // Silently fail - announcement is optional
+  }
+}
+
+function doLeaveGroupFromHeader() {
+  if (!currentChat || currentChat.type !== 'group') return;
+  doLeaveGroup(currentChat.id, currentChat.name);
+}
+
+async function openGroupManageModal() {
+  if (!currentChat || currentChat.type !== 'group') return;
+  const groupId = currentChat.id;
+  document.getElementById('groupManageTitle').textContent = currentChat.name + ' - 群组管理';
+  document.getElementById('groupAnnTextarea').value = groupAnnouncements[groupId] || '';
+
+  // Load members
+  const memberList = document.getElementById('groupMemberList');
+  memberList.innerHTML = '<li style="padding:8px 0;color:#999;font-size:12px;">加载中...</li>';
+
+  document.getElementById('groupManageModal').style.display = 'flex';
+
+  try {
+    const data = await api('GET', '/api/groups/members?groupId=' + groupId);
+    const members = data.members || data;
+    const group = groups.find(g => g.groupId === groupId);
+    const ownerId = group ? group.ownerId : null;
+    memberList.innerHTML = '';
+    if (Array.isArray(members)) {
+      members.forEach(m => {
+        const li = document.createElement('li');
+        li.className = 'member-item';
+        const isOwner = m.userId == ownerId;
+        const isSelf = m.userId == userId;
+        li.innerHTML = `
+          <span class="member-name">
+            ${escapeHtml(m.nickname || m.username || '用户' + m.userId)}
+            ${isOwner ? '<span class="owner-tag">(群主)</span>' : ''}
+          </span>
+          ${!isSelf && !isOwner ? '<button class="btn-kick" onclick="kickGroupMember(' + groupId + ',' + m.userId + ',this)">踢出</button>' : ''}
+        `;
+        memberList.appendChild(li);
+      });
+    }
+  } catch (e) {
+    memberList.innerHTML = '<li style="padding:8px 0;color:#e74c3c;font-size:12px;">加载成员失败</li>';
+  }
+}
+
+function closeGroupManageModal() {
+  document.getElementById('groupManageModal').style.display = 'none';
+}
+
+async function saveGroupAnnouncement() {
+  if (!currentChat || currentChat.type !== 'group') return;
+  const groupId = currentChat.id;
+  const ann = document.getElementById('groupAnnTextarea').value.trim();
+  try {
+    const data = await api('POST', '/api/groups/announcement', { groupId, announcement: ann });
+    if (data.success) {
+      groupAnnouncements[groupId] = ann;
+      const bar = document.getElementById('groupAnnouncementBar');
+      if (ann) {
+        document.getElementById('groupAnnouncementText').textContent = ann;
+        bar.classList.add('show');
+      } else {
+        bar.classList.remove('show');
+      }
+      alert('公告已保存');
+    } else {
+      alert(data.message || '保存失败');
+    }
+  } catch (e) {
+    alert('保存公告失败: ' + e.message);
+  }
+}
+
+async function kickGroupMember(groupId, memberUserId, btn) {
+  if (!confirm('确认踢出该成员?')) return;
+  try {
+    btn.disabled = true;
+    btn.textContent = '踢出中...';
+    const data = await api('POST', '/api/groups/kick', { groupId, userId: memberUserId });
+    if (data.success) {
+      btn.closest('.member-item').remove();
+    } else {
+      alert(data.message || '踢出失败');
+      btn.disabled = false;
+      btn.textContent = '踢出';
+    }
+  } catch (e) {
+    alert('踢出失败: ' + e.message);
+    btn.disabled = false;
+    btn.textContent = '踢出';
+  }
+}
+
 // ===== Init =====
 (function init() {
   setupScrollPagination();
+  initEmojiGrid();
   if (token && userId) {
     showChatPage();
   } else {

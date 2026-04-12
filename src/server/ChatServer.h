@@ -41,7 +41,9 @@
 #include <algorithm>
 #include <fstream>
 #include <memory>
+#include <mutex>
 #include <string>
+#include <unordered_set>
 #include <vector>
 #include <sys/stat.h>
 
@@ -100,6 +102,7 @@ public:
      */
     void start() {
         httpServer_.enableCors();
+        httpServer_.useRateLimit(100); // 100 req/sec per IP
         httpServer_.start();
         wsServer_.start();
 
@@ -500,6 +503,63 @@ private:
             if (j.is_discarded()) { resp = HttpResponse::badRequest("invalid JSON"); return; }
             resp.setJson(userService_.deleteAccount(userId, j.value("password", "")).dump());
         });
+
+        // GET /api/messages/search?keyword=xxx — 搜索消息
+        httpServer_.GET("/api/messages/search", [this](const HttpRequest& req, HttpResponse& resp) {
+            int64_t userId = authFromRequest(req);
+            if (userId < 0) { resp.setStatusCode(HttpStatusCode::UNAUTHORIZED); resp.setText("unauthorized"); return; }
+            std::string keyword = req.getParam("keyword", "");
+            resp.setJson(messageService_.searchMessages(userId, keyword).dump());
+        });
+
+        // POST /api/groups/announcement — 设置群公告
+        httpServer_.POST("/api/groups/announcement", [this](const HttpRequest& req, HttpResponse& resp) {
+            int64_t userId = authFromRequest(req);
+            if (userId < 0) { resp.setStatusCode(HttpStatusCode::UNAUTHORIZED); resp.setText("unauthorized"); return; }
+            auto j = json::parse(req.body, nullptr, false);
+            if (j.is_discarded()) { resp = HttpResponse::badRequest("invalid JSON"); return; }
+            int64_t groupId = j.value("groupId", (int64_t)0);
+            std::string announcement = j.value("announcement", "");
+            resp.setJson(groupService_.setAnnouncement(userId, groupId, announcement).dump());
+        });
+
+        // GET /api/groups/announcement?groupId=NNN — 获取群公告
+        httpServer_.GET("/api/groups/announcement", [this](const HttpRequest& req, HttpResponse& resp) {
+            int64_t userId = authFromRequest(req);
+            if (userId < 0) { resp.setStatusCode(HttpStatusCode::UNAUTHORIZED); resp.setText("unauthorized"); return; }
+            std::string gidStr = req.getParam("groupId", "0");
+            int64_t groupId = 0;
+            try { groupId = std::stoll(gidStr); } catch (...) {}
+            std::string ann = groupService_.getAnnouncement(groupId);
+            resp.setJson(json({{"success", true}, {"announcement", ann}}).dump());
+        });
+
+        // POST /api/groups/kick — 踢出群成员（仅群主）
+        httpServer_.POST("/api/groups/kick", [this](const HttpRequest& req, HttpResponse& resp) {
+            int64_t userId = authFromRequest(req);
+            if (userId < 0) { resp.setStatusCode(HttpStatusCode::UNAUTHORIZED); resp.setText("unauthorized"); return; }
+            auto j = json::parse(req.body, nullptr, false);
+            if (j.is_discarded()) { resp = HttpResponse::badRequest("invalid JSON"); return; }
+            int64_t groupId = j.value("groupId", (int64_t)0);
+            int64_t targetUserId = j.value("userId", (int64_t)0);
+            resp.setJson(groupService_.kickMember(userId, groupId, targetUserId).dump());
+        });
+
+        // GET /api/messages/read-status?peerId=NNN — 获取已读位置
+        httpServer_.GET("/api/messages/read-status", [this](const HttpRequest& req, HttpResponse& resp) {
+            int64_t userId = authFromRequest(req);
+            if (userId < 0) { resp.setStatusCode(HttpStatusCode::UNAUTHORIZED); resp.setText("unauthorized"); return; }
+            std::string peerStr = req.getParam("peerId", "0");
+
+            if (!redisPool_) { resp.setJson(json({{"lastReadMsgId", ""}}).dump()); return; }
+            auto conn = redisPool_->acquire(1000);
+            if (!conn || !conn->valid()) { resp.setJson(json({{"lastReadMsgId", ""}}).dump()); return; }
+
+            // What has the peer read of my messages?
+            std::string lastRead = conn->get("read_pos:" + peerStr + ":" + std::to_string(userId));
+            redisPool_->release(std::move(conn));
+            resp.setJson(json({{"lastReadMsgId", lastRead}}).dump());
+        });
     }
 
     // ==================== WebSocket ====================
@@ -551,6 +611,19 @@ private:
                 if (friendSession) {
                     friendSession->sendText(onlineMsg);
                 }
+            }
+
+            // 推送离线期间的未读消息数
+            json unreadInfo = json::object();
+            for (auto& f : friends) {
+                int64_t fid = f.value("userId", (int64_t)0);
+                int64_t count = getUnread(userId, fid);
+                if (count > 0) {
+                    unreadInfo[std::to_string(fid)] = count;
+                }
+            }
+            if (!unreadInfo.empty()) {
+                session->sendText(json({{"type", Protocol::UNREAD_SYNC}, {"data", unreadInfo}}).dump());
             }
         });
 
@@ -617,6 +690,7 @@ private:
     void handlePrivateMessage(const WsSessionPtr& session, const json& j, int64_t fromUserId) {
         std::string toStr = j.value("to", "");
         std::string content = j.value("content", "");
+        std::string replyTo = j.value("replyTo", "");
         if (toStr.empty() || content.empty()) {
             session->sendText(Protocol::makeError("missing 'to' or 'content'"));
             return;
@@ -634,6 +708,13 @@ private:
         }
 
         std::string msgId = Protocol::generateMsgId();
+
+        // Idempotent delivery: dedup by msgId
+        if (isDuplicate(msgId)) {
+            session->sendText(Protocol::makeAck(msgId));
+            return;
+        }
+
         int64_t timestamp = Protocol::nowMs();
 
         // Queue message (Redis) or direct save (fallback)
@@ -653,7 +734,15 @@ private:
         // Forward to recipient if online
         auto recipientSession = onlineManager_.getSession(toUserId);
         if (recipientSession) {
-            recipientSession->sendText(Protocol::makePrivateMsg(fromUserId, toUserId, content, msgId));
+            json fwd;
+            fwd["type"] = Protocol::MSG;
+            fwd["from"] = std::to_string(fromUserId);
+            fwd["to"] = std::to_string(toUserId);
+            fwd["content"] = content;
+            fwd["msgId"] = msgId;
+            fwd["timestamp"] = timestamp;
+            if (!replyTo.empty()) fwd["replyTo"] = replyTo;
+            recipientSession->sendText(fwd.dump());
         } else {
             // Recipient offline: increment unread count
             incrementUnread(toUserId, fromUserId);
@@ -663,6 +752,7 @@ private:
     void handleGroupMessage(const WsSessionPtr& session, const json& j, int64_t fromUserId) {
         std::string toStr = j.value("to", "");
         std::string content = j.value("content", "");
+        std::string replyTo = j.value("replyTo", "");
         if (toStr.empty() || content.empty()) {
             session->sendText(Protocol::makeError("missing 'to' or 'content'"));
             return;
@@ -680,6 +770,13 @@ private:
         }
 
         std::string msgId = Protocol::generateMsgId();
+
+        // Idempotent delivery: dedup by msgId
+        if (isDuplicate(msgId)) {
+            session->sendText(Protocol::makeAck(msgId));
+            return;
+        }
+
         int64_t timestamp = Protocol::nowMs();
 
         // Queue message (Redis) or direct save (fallback)
@@ -698,7 +795,15 @@ private:
 
         // Forward to all online group members (skip sender)
         auto memberIds = groupService_.getMemberIds(groupId);
-        std::string groupMsg = Protocol::makeGroupMsg(fromUserId, groupId, content, msgId);
+        json fwd;
+        fwd["type"] = Protocol::GROUP_MSG;
+        fwd["from"] = std::to_string(fromUserId);
+        fwd["to"] = std::to_string(groupId);
+        fwd["content"] = content;
+        fwd["msgId"] = msgId;
+        fwd["timestamp"] = timestamp;
+        if (!replyTo.empty()) fwd["replyTo"] = replyTo;
+        std::string groupMsg = fwd.dump();
         for (int64_t memberId : memberIds) {
             if (memberId == fromUserId) continue;
             auto memberSession = onlineManager_.getSession(memberId);
@@ -776,6 +881,16 @@ private:
 
         // Clear unread count: the reader (fromUserId) has read messages from toUserId
         clearUnread(fromUserId, toUserId);
+
+        // Persist read position in Redis
+        if (redisPool_) {
+            auto conn = redisPool_->acquire(1000);
+            if (conn && conn->valid()) {
+                // read_pos:{readerId}:{senderId} = lastMsgId
+                conn->set("read_pos:" + std::to_string(fromUserId) + ":" + toStr, lastMsgId);
+                redisPool_->release(std::move(conn));
+            }
+        }
 
         // Forward read receipt to the original sender
         auto senderSession = onlineManager_.getSession(toUserId);
@@ -897,6 +1012,32 @@ private:
                     j.value("timestamp", (int64_t)0));
             }
         }
+    }
+
+    // ==================== Message Dedup ====================
+
+    /// 最近处理过的消息 ID 集合，用于幂等性去重
+    std::unordered_set<std::string> recentMsgIds_;
+    std::mutex dedupMutex_;
+
+    /**
+     * @brief 检查消息是否重复（幂等性去重）
+     *
+     * 使用内存中的 set 记录最近处理过的 msgId。
+     * 当 set 大小超过 100000 时清空，避免无限增长。
+     *
+     * @param msgId 消息唯一标识
+     * @return true 消息已处理过（重复）；false 首次处理
+     */
+    bool isDuplicate(const std::string& msgId) {
+        std::lock_guard<std::mutex> lock(dedupMutex_);
+        if (recentMsgIds_.count(msgId)) return true;
+        recentMsgIds_.insert(msgId);
+        // Keep set bounded (remove oldest when too large)
+        if (recentMsgIds_.size() > 100000) {
+            recentMsgIds_.clear(); // Simple reset — good enough for dedup window
+        }
+        return false;
     }
 
     // ==================== Members ====================

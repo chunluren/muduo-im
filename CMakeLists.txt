@@ -49,3 +49,7 @@ target_link_libraries(muduo-im
     ${REDIS_LIBRARY}
     pthread
 )
+
+# WebSocket benchmark client
+add_executable(ws_bench benchmark/ws_bench.cpp)
+target_link_libraries(ws_bench pthread)

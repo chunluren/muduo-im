@@ -22,6 +22,7 @@ CREATE TABLE IF NOT EXISTS `groups` (
     id BIGINT PRIMARY KEY AUTO_INCREMENT,
     name VARCHAR(128) NOT NULL,
     owner_id BIGINT NOT NULL,
+    announcement TEXT DEFAULT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     INDEX idx_groups_owner (owner_id)
 );

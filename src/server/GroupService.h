@@ -39,7 +39,7 @@ public:
         auto conn = db_->acquire(3000);
         if (!conn || !conn->valid()) return json::array();
 
-        std::string sql = "SELECT g.id, g.name, g.owner_id FROM group_members gm "
+        std::string sql = "SELECT g.id, g.name, g.owner_id, g.announcement FROM group_members gm "
                           "JOIN `groups` g ON gm.group_id = g.id WHERE gm.user_id=" + std::to_string(userId);
         auto result = conn->query(sql);
         db_->release(std::move(conn));
@@ -51,7 +51,8 @@ public:
                 groups.push_back({
                     {"groupId", std::stoll(row[0])},
                     {"name", row[1]},
-                    {"ownerId", std::stoll(row[2])}
+                    {"ownerId", std::stoll(row[2])},
+                    {"announcement", row[3] ? row[3] : ""}
                 });
             }
         }
@@ -207,6 +208,66 @@ public:
         // 删除群成员 + 群组
         conn->execute("DELETE FROM group_members WHERE group_id=" + std::to_string(groupId));
         conn->execute("DELETE FROM `groups` WHERE id=" + std::to_string(groupId));
+        db_->release(std::move(conn));
+        return {{"success", true}};
+    }
+
+    /// 设置群公告（仅群主）
+    json setAnnouncement(int64_t userId, int64_t groupId, const std::string& announcement) {
+        auto conn = db_->acquire(3000);
+        if (!conn || !conn->valid()) return {{"success", false}, {"message", "db error"}};
+
+        // 验证群主
+        auto result = conn->query("SELECT owner_id FROM `groups` WHERE id=" + std::to_string(groupId));
+        if (!result || mysql_num_rows(result.get()) == 0) {
+            db_->release(std::move(conn));
+            return {{"success", false}, {"message", "group not found"}};
+        }
+        MYSQL_ROW row = mysql_fetch_row(result.get());
+        if (std::stoll(row[0]) != userId) {
+            db_->release(std::move(conn));
+            return {{"success", false}, {"message", "only owner can set announcement"}};
+        }
+
+        conn->execute("UPDATE `groups` SET announcement='" + conn->escape(announcement)
+            + "' WHERE id=" + std::to_string(groupId));
+        db_->release(std::move(conn));
+        return {{"success", true}};
+    }
+
+    /// 获取群公告
+    std::string getAnnouncement(int64_t groupId) {
+        auto conn = db_->acquire(3000);
+        if (!conn || !conn->valid()) return "";
+
+        auto result = conn->query("SELECT announcement FROM `groups` WHERE id=" + std::to_string(groupId));
+        db_->release(std::move(conn));
+        if (!result || mysql_num_rows(result.get()) == 0) return "";
+        MYSQL_ROW row = mysql_fetch_row(result.get());
+        return row[0] ? row[0] : "";
+    }
+
+    /// 踢出群成员（仅群主）
+    json kickMember(int64_t operatorId, int64_t groupId, int64_t targetUserId) {
+        if (operatorId == targetUserId) return {{"success", false}, {"message", "cannot kick yourself"}};
+
+        auto conn = db_->acquire(3000);
+        if (!conn || !conn->valid()) return {{"success", false}, {"message", "db error"}};
+
+        // 验证群主
+        auto result = conn->query("SELECT owner_id FROM `groups` WHERE id=" + std::to_string(groupId));
+        if (!result || mysql_num_rows(result.get()) == 0) {
+            db_->release(std::move(conn));
+            return {{"success", false}, {"message", "group not found"}};
+        }
+        MYSQL_ROW row = mysql_fetch_row(result.get());
+        if (std::stoll(row[0]) != operatorId) {
+            db_->release(std::move(conn));
+            return {{"success", false}, {"message", "only owner can kick members"}};
+        }
+
+        conn->execute("DELETE FROM group_members WHERE group_id=" + std::to_string(groupId)
+            + " AND user_id=" + std::to_string(targetUserId));
         db_->release(std::move(conn));
         return {{"success", true}};
     }

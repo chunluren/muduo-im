@@ -1,12 +1,14 @@
 /**
  * @file main.cpp
- * @brief muduo-im 服务器入口，初始化配置并启动 ChatServer
+ * @brief muduo-im 服务器入口，从配置文件加载参数并启动 ChatServer
  *
- * 启动流程：MySQL 配置 -> Redis 配置 -> EventLoop 创建 -> ChatServer 初始化 -> 启动事件循环。
+ * 启动流程：加载配置文件 -> MySQL 配置 -> Redis 配置 -> EventLoop 创建 -> ChatServer 初始化 -> 启动事件循环。
  * 通过注册 SIGINT/SIGTERM 信号处理函数实现优雅退出。
+ * 配置文件路径可通过命令行参数指定，默认为 ../config.ini。
  */
 
 #include "server/ChatServer.h"
+#include "common/Config.h"
 #include "net/EventLoop.h"
 #include <iostream>
 #include <signal.h>
@@ -31,45 +33,58 @@ void signalHandler(int) {
  *
  * 初始化流程：
  * 1. 注册信号处理函数（SIGINT/SIGTERM -> 优雅退出）
- * 2. 配置 MySQL 连接池参数
- * 3. 配置 Redis 连接池参数
- * 4. 创建 EventLoop（Reactor 事件循环）
- * 5. 创建并启动 ChatServer（HTTP API + WebSocket 服务）
- * 6. 进入事件循环，阻塞直到收到退出信号
+ * 2. 加载配置文件（默认 ../config.ini，可通过命令行参数覆盖）
+ * 3. 配置 MySQL 连接池参数
+ * 4. 配置 Redis 连接池参数
+ * 5. 创建 EventLoop（Reactor 事件循环）
+ * 6. 创建并启动 ChatServer（HTTP API + WebSocket 服务）
+ * 7. 进入事件循环，阻塞直到收到退出信号
  */
-int main() {
+int main(int argc, char* argv[]) {
     signal(SIGINT, signalHandler);
     signal(SIGTERM, signalHandler);
 
+    // ---- 加载配置文件 ----
+    std::string configFile = (argc > 1) ? argv[1] : "../config.ini";
+    AppConfig config;
+    if (!config.load(configFile)) {
+        std::cerr << "Warning: config file not found: " << configFile << ", using defaults" << std::endl;
+    }
+
     // ---- MySQL 连接池配置 ----
     MySQLPoolConfig mysqlConfig;
-    mysqlConfig.host = "127.0.0.1";       ///< MySQL 主机地址，默认本机
-    mysqlConfig.port = 3306;              ///< MySQL 端口，默认 3306
-    mysqlConfig.user = "root";            ///< 数据库用户名
-    mysqlConfig.password = "";            ///< 数据库密码（生产环境应从配置文件或环境变量读取）
-    mysqlConfig.database = "muduo_im";    ///< 数据库名称
-    mysqlConfig.minSize = 5;              ///< 连接池最小连接数（空闲时保持的连接数）
-    mysqlConfig.maxSize = 20;             ///< 连接池最大连接数（并发高峰时的上限）
+    mysqlConfig.host = config.get("mysql.host", "127.0.0.1");
+    mysqlConfig.port = config.getInt("mysql.port", 3306);
+    mysqlConfig.user = config.get("mysql.user", "root");
+    mysqlConfig.password = config.get("mysql.password", "");
+    mysqlConfig.database = config.get("mysql.database", "muduo_im");
+    mysqlConfig.minSize = config.getInt("mysql.pool_min", 5);
+    mysqlConfig.maxSize = config.getInt("mysql.pool_max", 20);
 
     // ---- Redis 连接池配置 ----
     RedisPoolConfig redisConfig;
-    redisConfig.host = "127.0.0.1";       ///< Redis 主机地址，默认本机
-    redisConfig.port = 6379;              ///< Redis 端口，默认 6379
-    redisConfig.minSize = 3;              ///< 连接池最小连接数
-    redisConfig.maxSize = 10;             ///< 连接池最大连接数
+    redisConfig.host = config.get("redis.host", "127.0.0.1");
+    redisConfig.port = config.getInt("redis.port", 6379);
+    redisConfig.password = config.get("redis.password", "");
+    redisConfig.minSize = config.getInt("redis.pool_min", 3);
+    redisConfig.maxSize = config.getInt("redis.pool_max", 10);
+
+    uint16_t httpPort = config.getInt("server.http_port", 8080);
+    uint16_t wsPort = config.getInt("server.ws_port", 9090);
+    std::string jwtSecret = config.get("server.jwt_secret", "muduo-im-jwt-secret-key");
 
     // ---- 创建事件循环 ----
     EventLoop loop;
     g_loop = &loop;
 
     // ---- 创建并启动 ChatServer ----
-    // 参数：EventLoop、HTTP 端口(8080)、WebSocket 端口(9090)、MySQL 配置、Redis 配置、JWT 密钥
-    ChatServer server(&loop, 8080, 9090, mysqlConfig, redisConfig, "muduo-im-jwt-secret-key");
+    ChatServer server(&loop, httpPort, wsPort, mysqlConfig, redisConfig, jwtSecret);
     server.start();
 
     std::cout << "=== muduo-im ===" << std::endl;
-    std::cout << "HTTP API: http://localhost:8080" << std::endl;
-    std::cout << "WebSocket: ws://localhost:9090/ws?token=xxx" << std::endl;
+    std::cout << "HTTP API: http://localhost:" << httpPort << std::endl;
+    std::cout << "WebSocket: ws://localhost:" << wsPort << std::endl;
+    std::cout << "Config: " << configFile << std::endl;
 
     loop.loop();
     std::cout << "Server stopped." << std::endl;

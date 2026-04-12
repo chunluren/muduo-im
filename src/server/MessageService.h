@@ -207,6 +207,67 @@ public:
         return affected > 0;
     }
 
+    /**
+     * @brief 搜索消息（按关键词）
+     *
+     * 在用户参与的私聊和群聊消息中搜索包含指定关键词的消息。
+     * 关键词最少 2 个字符，防止过于宽泛的搜索导致性能问题。
+     *
+     * @param userId  当前用户 ID（只搜索该用户参与的消息）
+     * @param keyword 搜索关键词（最少 2 字符）
+     * @param limit   返回结果数量上限，默认 50
+     * @return json 包含 success 和 messages 数组
+     */
+    json searchMessages(int64_t userId, const std::string& keyword, int limit = 50) {
+        if (keyword.empty() || keyword.size() < 2) {
+            return {{"success", false}, {"message", "keyword too short"}};
+        }
+
+        auto conn = db_->acquire(3000);
+        if (!conn || !conn->valid()) return {{"success", false}, {"message", "db error"}};
+
+        std::string escaped = conn->escape(keyword);
+
+        // 搜索私聊消息
+        std::string sql = "SELECT msg_id, from_user, to_user, content, timestamp, 'private' as type FROM private_messages "
+            "WHERE (from_user=" + std::to_string(userId) + " OR to_user=" + std::to_string(userId) + ") "
+            "AND content LIKE '%" + escaped + "%' AND recalled=0 "
+            "ORDER BY timestamp DESC LIMIT " + std::to_string(limit);
+
+        auto result = conn->query(sql);
+        json messages = json::array();
+        if (result) {
+            MYSQL_ROW row;
+            while ((row = mysql_fetch_row(result.get()))) {
+                messages.push_back({
+                    {"msgId", row[0]}, {"from", std::stoll(row[1])}, {"to", std::stoll(row[2])},
+                    {"content", row[3]}, {"timestamp", std::stoll(row[4])}, {"chatType", row[5]}
+                });
+            }
+        }
+
+        // 搜索群聊消息
+        sql = "SELECT gm.msg_id, gm.from_user, gm.group_id, gm.content, gm.timestamp, 'group' as type "
+            "FROM group_messages gm JOIN group_members mb ON gm.group_id = mb.group_id "
+            "WHERE mb.user_id=" + std::to_string(userId) + " "
+            "AND gm.content LIKE '%" + escaped + "%' AND gm.recalled=0 "
+            "ORDER BY gm.timestamp DESC LIMIT " + std::to_string(limit);
+
+        result = conn->query(sql);
+        if (result) {
+            MYSQL_ROW row;
+            while ((row = mysql_fetch_row(result.get()))) {
+                messages.push_back({
+                    {"msgId", row[0]}, {"from", std::stoll(row[1])}, {"groupId", std::stoll(row[2])},
+                    {"content", row[3]}, {"timestamp", std::stoll(row[4])}, {"chatType", row[5]}
+                });
+            }
+        }
+
+        db_->release(std::move(conn));
+        return {{"success", true}, {"messages", messages}};
+    }
+
 private:
     std::shared_ptr<MySQLPool> db_;
 };
