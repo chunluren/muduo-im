@@ -390,3 +390,123 @@ ws://localhost:9090/ws?token=<JWT_TOKEN>
 
 **Client sends:** `{"type": "typing", "to": "userId"}`
 **Server forwards:** `{"type": "typing", "from": "userId", "to": "userId"}`
+
+---
+
+### GET /api/messages/search?keyword=xxx
+
+搜索聊天记录。需要认证。
+
+**Query 参数:**
+- `keyword` -- 搜索关键词（必填，SQL LIKE 匹配）
+- `peerId` -- 限定与某用户的私聊记录（可选）
+- `groupId` -- 限定某群组的聊天记录（可选）
+
+返回最多 50 条匹配消息，按时间倒序排列。
+
+**Response (200):**
+```json
+[
+  {"msgId": "uuid", "from": 1, "to": 2, "content": "matched text", "timestamp": 1712880000000}
+]
+```
+
+**Error:**
+```json
+{"success": false, "message": "keyword required"}
+```
+
+---
+
+### POST /api/groups/announcement
+
+设置群公告（仅群主）。需要认证。
+
+**Request:**
+```json
+{
+  "groupId": 1,
+  "content": "公告内容"
+}
+```
+
+**Response (200):**
+```json
+{"success": true}
+```
+
+**Error:**
+```json
+{"success": false, "message": "only owner can set announcement"}
+{"success": false, "message": "groupId and content required"}
+```
+
+---
+
+### GET /api/groups/announcement?groupId=NNN
+
+获取群公告。需要认证。
+
+**Query 参数:**
+- `groupId` -- 群组 ID（必填）
+
+**Response (200):**
+```json
+{"success": true, "groupId": 1, "content": "公告内容", "updatedAt": 1712880000000}
+```
+
+**Error:**
+```json
+{"success": false, "message": "groupId required"}
+{"success": false, "message": "no announcement"}
+```
+
+---
+
+### POST /api/groups/kick
+
+踢出群成员（仅群主）。需要认证。
+
+**Request:**
+```json
+{
+  "groupId": 1,
+  "userId": 2
+}
+```
+
+**Response (200):**
+```json
+{"success": true}
+```
+
+**Error:**
+```json
+{"success": false, "message": "only owner can kick members"}
+{"success": false, "message": "cannot kick yourself"}
+{"success": false, "message": "groupId and userId required"}
+```
+
+---
+
+### GET /api/messages/read-status?peerId=NNN
+
+查询与某用户的消息已读状态。需要认证。
+
+**Query 参数:**
+- `peerId` -- 对方用户 ID（必填）
+
+**Response (200):**
+```json
+{
+  "success": true,
+  "peerId": 2,
+  "lastReadMsgId": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+  "lastReadTime": 1712880000000
+}
+```
+
+**Error:**
+```json
+{"success": false, "message": "peerId required"}
+```

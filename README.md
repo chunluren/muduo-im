@@ -18,6 +18,17 @@
 - 消息撤回（2 分钟内，软删除 recalled 字段）
 - 已读回执
 - Redis 降级（Redis 不可用时直接写 MySQL 回退）
+- 配置文件支持（config.ini 外部配置）
+- 消息搜索（关键词搜索聊天记录）
+- 表情包选择器
+- 图片消息内联预览
+- 消息引用/回复（replyTo 字段）
+- 群公告（群主设置/获取）
+- 群管理（踢人）
+- 离线未读同步
+- 消息幂等投递（去重）
+- HTTP 请求限流
+- C++ WebSocket 压测客户端
 - Web 前端（单文件 HTML）
 
 ## 技术栈
@@ -52,6 +63,9 @@ muduo-im/
 │   └── index.html             # Web 前端
 ├── sql/
 │   └── init.sql               # 建表脚本
+├── benchmark/
+│   └── ws_bench.cpp           # C++ WebSocket 压测客户端
+├── config.ini                 # 运行时配置文件（MySQL/Redis/JWT 等）
 └── CMakeLists.txt
 ```
 
@@ -76,12 +90,17 @@ muduo-im/
    cmake .. && make -j$(nproc)
    ```
 
-3. 运行
+3. 配置（可选）
    ```
-   ./muduo-im
+   cp config.ini.example config.ini   # 按需修改 MySQL/Redis/JWT 等参数
    ```
 
-4. 访问
+4. 运行
+   ```
+   ./muduo-im                          # 自动加载同目录下 config.ini（如存在）
+   ```
+
+5. 访问
    ```
    浏览器打开 http://localhost:8080/index.html
    ```
@@ -119,6 +138,11 @@ muduo-im/
 | /api/messages/history | GET | 历史消息 |
 | /api/unread | GET | 未读消息计数 |
 | /api/upload | POST | 文件上传（multipart） |
+| /api/messages/search | GET | 搜索消息 |
+| /api/groups/announcement | POST | 设置群公告 |
+| /api/groups/announcement | GET | 获取群公告 |
+| /api/groups/kick | POST | 踢出群成员 |
+| /api/messages/read-status | GET | 已读状态查询 |
 
 ### WebSocket 协议
 
@@ -132,7 +156,10 @@ muduo-im/
 {"type":"recall", "msgId":"uuid"}
 {"type":"read_ack", "to":"senderId", "lastMsgId":"uuid"}
 {"type":"typing", "to":"userId"}
+{"type":"unread_sync", "data":{"userId":count}}
 ```
+
+消息可携带 `"replyTo":"msgId"` 字段实现引用/回复。
 
 服务端推送:
 ```json
@@ -157,4 +184,9 @@ muduo-im/
 ```bash
 python3 benchmark/ws_benchmark.py [客户端数] [每客户端消息数]
 python3 benchmark/ws_benchmark.py 10 100   # 10客户端 × 100消息
+```
+
+### C++ WebSocket 压测客户端
+```bash
+cd build && ./ws_bench [并发数] [每客户端消息数]
 ```

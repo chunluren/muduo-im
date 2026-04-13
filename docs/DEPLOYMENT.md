@@ -72,38 +72,58 @@ make -j$(nproc)
 
 ## 配置
 
-当前配置硬编码在 `src/server/main.cpp` 中，修改后需重新编译:
+支持通过 `config.ini` 文件配置，无需重新编译:
 
-### MySQL 连接
+### 配置文件
 
-```cpp
-MySQLPoolConfig mysqlConfig;
-mysqlConfig.host = "127.0.0.1";    // MySQL 地址
-mysqlConfig.port = 3306;            // MySQL 端口
-mysqlConfig.user = "root";          // 用户名
-mysqlConfig.password = "";           // 密码
-mysqlConfig.database = "muduo_im";   // 数据库名
-mysqlConfig.minSize = 5;            // 连接池最小连接数
-mysqlConfig.maxSize = 20;           // 连接池最大连接数
+```bash
+# 复制示例配置
+cp config.ini.example config.ini
+
+# 按需修改
+vim config.ini
 ```
 
-### Redis 连接
+配置项示例:
 
-```cpp
-RedisPoolConfig redisConfig;
-redisConfig.host = "127.0.0.1";    // Redis 地址
-redisConfig.port = 6379;            // Redis 端口
-redisConfig.minSize = 3;            // 连接池最小连接数
-redisConfig.maxSize = 10;           // 连接池最大连接数
+```ini
+# MySQL
+mysql_host=127.0.0.1
+mysql_port=3306
+mysql_user=root
+mysql_password=
+mysql_database=muduo_im
+mysql_min_conn=5
+mysql_max_conn=20
+
+# Redis
+redis_host=127.0.0.1
+redis_port=6379
+redis_min_conn=3
+redis_max_conn=10
+
+# JWT
+jwt_secret=muduo-im-jwt-secret-key
+
+# Server
+http_port=8080
+ws_port=9090
 ```
 
-### JWT 密钥
+生产环境务必修改 `jwt_secret` 为强随机字符串。
 
-```cpp
-ChatServer server(&loop, 8080, 9090, mysqlConfig, redisConfig, "muduo-im-jwt-secret-key");
+### 加载方式
+
+```bash
+# 方式 1: 命令行指定配置文件路径
+./muduo-im ../config.ini
+
+# 方式 2: 自动加载当前目录下的 config.ini（如存在）
+./muduo-im
+
+# 方式 3: 无配置文件，使用代码中的默认值
+./muduo-im
 ```
-
-生产环境务必修改 JWT 密钥为强随机字符串。
 
 ## 运行
 
@@ -111,9 +131,12 @@ ChatServer server(&loop, 8080, 9090, mysqlConfig, redisConfig, "muduo-im-jwt-sec
 # 确保 MySQL 和 Redis 正在运行
 sudo systemctl start mysql redis
 
-# 启动服务
+# 启动服务（自动加载同目录 config.ini）
 cd build
 ./muduo-im
+
+# 或指定配置文件路径
+./muduo-im ../config.ini
 ```
 
 启动成功输出:
@@ -146,11 +169,11 @@ WebSocket: ws://localhost:9090/ws?token=xxx
 bash tests/e2e_test.sh
 ```
 
-测试内容（共 21 项检查）: 注册、登录、密码验证、用户资料查看/修改、修改密码、好友申请/同意/拒绝/列表、群组创建/加入/退出/解散/成员查询、消息长度校验、文件上传限制、未认证访问拒绝。
+测试内容: 注册、登录、密码验证、用户资料查看/修改、修改密码、好友申请/同意/拒绝/列表、群组创建/加入/退出/解散/成员查询/公告/踢人、消息长度校验、消息搜索、文件上传限制、已读状态查询、未认证访问拒绝。
 
 注意: 旧的 `/api/friends/add` 接口已移除，好友添加改为申请制（`/api/friends/request` + `/api/friends/handle`）。
 
-### WebSocket 压力测试
+### WebSocket 压力测试（Python）
 
 ```bash
 # 默认 10 客户端，每客户端 100 条消息
@@ -162,6 +185,18 @@ python3 benchmark/ws_benchmark.py 50 500
 ```
 
 输出: 连接成功率、消息发送数、ACK 接收数、QPS、延迟 P50/P99。
+
+### C++ WebSocket 压测客户端
+
+```bash
+# 编译后在 build 目录下
+cd build
+
+# 用法: ./ws_bench <host> <port> <并发数> <每客户端消息数> <token>
+./ws_bench 127.0.0.1 9090 10 1000 <token>
+```
+
+与 Python 版本相比，C++ 压测客户端开销更低，适合更高并发场景。
 
 ### 手动测试
 

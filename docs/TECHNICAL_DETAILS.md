@@ -108,7 +108,7 @@ WHERE msg_id='xxx' AND from_user=123 AND timestamp > (now - 120000)
 4. 转发给 B: `{type:"read_ack", from:"A_id", to:"B_id", lastMsgId:"xxx"}`
 5. B 的客户端更新消息已读状态
 
-注意: 已读回执不持久化到数据库，仅在线转发。如果 B 不在线则丢弃。
+已读回执持久化到 Redis: 服务端收到 read_ack 后，将已读位置写入 Redis（key: `read:{userId}:{peerId}`, value: lastMsgId + timestamp）。查询接口 `GET /api/messages/read-status?peerId=NNN` 从 Redis 读取。如果 B 在线则实时转发，不在线时已读状态仍可通过 REST API 查询。
 
 ## 好友关系
 
@@ -188,3 +188,101 @@ INSERT IGNORE INTO friends (user_id, friend_id) VALUES (2, 1)
 ## CORS 支持
 
 ChatServer 启动时调用 `httpServer_.enableCors()`，允许前端跨域访问 REST API。
+
+## 消息幂等投递
+
+位置: `ChatServer::handleMessage()` / `ChatServer::handleGroupMessage()`
+
+### 机制
+
+客户端为每条消息分配唯一 `msgId`（UUID v4），服务端维护一个 in-memory 去重集合:
+
+1. 收到消息时，检查 `msgId` 是否已存在于去重集合中
+2. 若已存在，直接返回 ACK，不重复写入数据库也不重复广播
+3. 若不存在，将 `msgId` 加入集合，正常处理消息
+
+### 容量限制
+
+去重集合使用 `std::unordered_set<std::string>` 实现，上限 100,000 条。当集合满时，清空整个集合重新开始。这是一个简单的有界策略，适用于单实例部署场景。
+
+### 适用场景
+
+- 客户端因网络抖动重发相同消息
+- WebSocket 断线重连后重发未确认消息
+
+## 配置文件系统
+
+位置: `src/server/main.cpp`
+
+### 格式
+
+采用简单的 key=value INI 格式:
+
+```ini
+# MySQL
+mysql_host=127.0.0.1
+mysql_port=3306
+mysql_user=root
+mysql_password=
+mysql_database=muduo_im
+mysql_min_conn=5
+mysql_max_conn=20
+
+# Redis
+redis_host=127.0.0.1
+redis_port=6379
+redis_min_conn=3
+redis_max_conn=10
+
+# JWT
+jwt_secret=muduo-im-jwt-secret-key
+
+# Server
+http_port=8080
+ws_port=9090
+```
+
+### 加载优先级
+
+1. 命令行参数指定路径: `./muduo-im ../config.ini`
+2. 当前目录下的 `config.ini`（自动检测）
+3. 无配置文件时使用代码中的默认值
+
+### 解析实现
+
+逐行读取文件，忽略空行和 `#` 开头的注释行，按第一个 `=` 分割 key 和 value，去除前后空白。解析结果存入 `std::unordered_map<std::string, std::string>`，启动时按 key 覆盖默认配置。
+
+## 消息搜索实现
+
+位置: `MessageService::searchMessages()`
+
+### 查询逻辑
+
+消息搜索同时检索私聊和群聊两张表，使用 SQL LIKE 进行关键词匹配:
+
+**私聊消息搜索:**
+```sql
+SELECT * FROM private_messages
+WHERE (from_user = ? OR to_user = ?) AND content LIKE '%keyword%' AND recalled = 0
+ORDER BY timestamp DESC LIMIT 50
+```
+
+**群聊消息搜索:**
+```sql
+SELECT gm.* FROM group_messages gm
+JOIN group_members mem ON gm.group_id = mem.group_id
+WHERE mem.user_id = ? AND gm.content LIKE '%keyword%' AND gm.recalled = 0
+ORDER BY gm.timestamp DESC LIMIT 50
+```
+
+### 权限控制
+
+- 私聊: 只搜索当前用户参与的会话（from_user 或 to_user 为自己）
+- 群聊: 通过 JOIN group_members 确保只搜索用户已加入的群组消息
+- 已撤回消息（recalled=1）不出现在搜索结果中
+
+### 可选过滤
+
+- `peerId` 参数: 限定与某用户的私聊记录
+- `groupId` 参数: 限定某群组的聊天记录
+- 两者均为可选，不传则搜索所有会话
