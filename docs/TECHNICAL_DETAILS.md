@@ -286,3 +286,37 @@ ORDER BY gm.timestamp DESC LIMIT 50
 - `peerId` 参数: 限定与某用户的私聊记录
 - `groupId` 参数: 限定某群组的聊天记录
 - 两者均为可选，不传则搜索所有会话
+
+## ACID 事务包装
+
+### 实现方式
+
+所有多表写操作使用 `TransactionGuard` RAII 包装：
+
+```cpp
+json handleRequest(int64_t userId, int64_t requestId, bool accept) {
+    auto conn = db_->acquire(3000);
+    TransactionGuard tx(conn);
+    if (!tx.active()) return {{"success", false}};
+
+    conn->execute("UPDATE friend_requests SET status=1 ...");
+    conn->execute("INSERT INTO friends ...");
+    conn->execute("INSERT INTO friends ...");
+
+    if (tx.commit()) return {{"success", true}};
+    return {{"success", false}};
+    // 函数返回时 tx 析构，若未 commit 则自动 ROLLBACK
+}
+```
+
+### 覆盖范围
+
+| Service | 方法 | 事务包装原因 |
+|---------|------|------------|
+| FriendService | handleRequest(accept) | UPDATE + 2×INSERT |
+| FriendService | addFriend | 2×INSERT（双向） |
+| FriendService | deleteFriend | 2×DELETE（双向） |
+| GroupService | deleteGroup | DELETE group_members + DELETE groups |
+| UserService | deleteAccount | 4×DELETE（级联清理） |
+
+单条 SQL 操作（如 sendRequest, createGroup）不需要事务。

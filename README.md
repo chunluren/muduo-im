@@ -30,6 +30,10 @@
 - HTTP 请求限流
 - C++ WebSocket 压测客户端
 - Web 前端（单文件 HTML）
+- ACID 事务保证（多表操作原子性）
+- 外键约束 + 级联删除
+- Redis AOF 持久化（文档：docs/REDIS_CONFIG.md）
+- TransactionGuard RAII 事务守卫
 
 ## 技术栈
 

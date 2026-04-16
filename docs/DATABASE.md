@@ -184,3 +184,27 @@ ORDER BY timestamp DESC LIMIT 50
 | 缺点 | 如需收件箱需额外索引 | 大群查询时需过滤 |
 
 私聊消息只存一份但包含 from_user 和 to_user，查询时双向匹配，本质上是写扩散的简化形式。群聊消息按 group_id 存储，所有成员读取同一份数据，是典型的读扩散模型。
+
+## 外键约束
+
+所有非消息表添加了 FOREIGN KEY + ON DELETE CASCADE 级联删除：
+
+| 表 | 约束 | 级联行为 |
+|----|------|---------|
+| friends.user_id → users.id | CASCADE | 用户删除时清理好友关系 |
+| friends.friend_id → users.id | CASCADE | 同上（另一方向） |
+| groups.owner_id → users.id | CASCADE | 群主删号时删群 |
+| group_members.group_id → groups.id | CASCADE | 群解散时清理成员 |
+| group_members.user_id → users.id | CASCADE | 用户删号时退出所有群 |
+| friend_requests.from_user → users.id | CASCADE | 清理申请 |
+| friend_requests.to_user → users.id | CASCADE | 清理申请 |
+
+**消息表无外键**：保留历史消息即使用户已删号。
+
+### 迁移脚本
+
+`sql/migrate_fk.sql` 用于为已有数据库添加外键：
+1. 先清理悬挂引用
+2. 再 ALTER TABLE ADD CONSTRAINT
+
+新部署直接用 `sql/init.sql`（外键已内置）。
