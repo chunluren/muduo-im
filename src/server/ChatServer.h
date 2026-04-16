@@ -184,6 +184,24 @@ private:
             resp.setJson(result.dump());
         });
 
+        // POST /api/friends/add
+        httpServer_.POST("/api/friends/add", [this](const HttpRequest& req, HttpResponse& resp) {
+            int64_t userId = authFromRequest(req);
+            if (userId < 0) {
+                resp.setStatusCode(HttpStatusCode::UNAUTHORIZED);
+                resp.setText("unauthorized");
+                return;
+            }
+            auto j = json::parse(req.body, nullptr, false);
+            if (j.is_discarded()) {
+                resp = HttpResponse::badRequest("invalid JSON");
+                return;
+            }
+            int64_t friendId = j.value("friendId", (int64_t)0);
+            json result = friendService_.addFriend(userId, friendId);
+            resp.setJson(result.dump());
+        });
+
         // POST /api/friends/delete
         httpServer_.POST("/api/friends/delete", [this](const HttpRequest& req, HttpResponse& resp) {
             int64_t userId = authFromRequest(req);

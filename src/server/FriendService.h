@@ -73,16 +73,20 @@ public:
         auto conn = db_->acquire(3000);
         if (!conn || !conn->valid()) return {{"success", false}, {"message", "db error"}};
 
-        // 双向插入
-        std::string sql1 = "INSERT IGNORE INTO friends (user_id, friend_id) VALUES ("
-            + std::to_string(userId) + "," + std::to_string(friendId) + ")";
-        std::string sql2 = "INSERT IGNORE INTO friends (user_id, friend_id) VALUES ("
-            + std::to_string(friendId) + "," + std::to_string(userId) + ")";
+        TransactionGuard tx(conn);
+        if (!tx.active()) {
+            db_->release(std::move(conn));
+            return {{"success", false}, {"message", "failed to start transaction"}};
+        }
 
-        conn->execute(sql1);
-        conn->execute(sql2);
+        int r1 = conn->execute("INSERT IGNORE INTO friends (user_id, friend_id) VALUES ("
+            + std::to_string(userId) + "," + std::to_string(friendId) + ")");
+        int r2 = conn->execute("INSERT IGNORE INTO friends (user_id, friend_id) VALUES ("
+            + std::to_string(friendId) + "," + std::to_string(userId) + ")");
+
+        bool success = (r1 >= 0 && r2 >= 0) && tx.commit();
         db_->release(std::move(conn));
-
+        if (!success) return {{"success", false}, {"message", "add failed"}};
         return {{"success", true}};
     }
 
@@ -100,12 +104,20 @@ public:
         auto conn = db_->acquire(3000);
         if (!conn || !conn->valid()) return {{"success", false}, {"message", "db error"}};
 
-        conn->execute("DELETE FROM friends WHERE user_id=" + std::to_string(userId)
-                      + " AND friend_id=" + std::to_string(friendId));
-        conn->execute("DELETE FROM friends WHERE user_id=" + std::to_string(friendId)
-                      + " AND friend_id=" + std::to_string(userId));
-        db_->release(std::move(conn));
+        TransactionGuard tx(conn);
+        if (!tx.active()) {
+            db_->release(std::move(conn));
+            return {{"success", false}, {"message", "failed to start transaction"}};
+        }
 
+        int r1 = conn->execute("DELETE FROM friends WHERE user_id=" + std::to_string(userId)
+                      + " AND friend_id=" + std::to_string(friendId));
+        int r2 = conn->execute("DELETE FROM friends WHERE user_id=" + std::to_string(friendId)
+                      + " AND friend_id=" + std::to_string(userId));
+
+        bool success = (r1 >= 0 && r2 >= 0) && tx.commit();
+        db_->release(std::move(conn));
+        if (!success) return {{"success", false}, {"message", "delete failed"}};
         return {{"success", true}};
     }
 
@@ -166,7 +178,6 @@ public:
         auto conn = db_->acquire(3000);
         if (!conn || !conn->valid()) return {{"success", false}, {"message", "db error"}};
 
-        // 查找申请
         auto result = conn->query("SELECT from_user, to_user FROM friend_requests WHERE id="
             + std::to_string(requestId) + " AND to_user=" + std::to_string(userId) + " AND status=0");
         if (!result || mysql_num_rows(result.get()) == 0) {
@@ -178,19 +189,30 @@ public:
         int64_t fromUser = std::stoll(row[0]);
         int64_t toUser = std::stoll(row[1]);
 
+        bool success = false;
         if (accept) {
-            // 同意：更新状态 + 双向添加好友
-            conn->execute("UPDATE friend_requests SET status=1 WHERE id=" + std::to_string(requestId));
-            conn->execute("INSERT IGNORE INTO friends (user_id, friend_id) VALUES ("
-                + std::to_string(fromUser) + "," + std::to_string(toUser) + ")");
-            conn->execute("INSERT IGNORE INTO friends (user_id, friend_id) VALUES ("
-                + std::to_string(toUser) + "," + std::to_string(fromUser) + ")");
-        } else {
-            // 拒绝
-            conn->execute("UPDATE friend_requests SET status=2 WHERE id=" + std::to_string(requestId));
-        }
-        db_->release(std::move(conn));
+            TransactionGuard tx(conn);
+            if (!tx.active()) {
+                db_->release(std::move(conn));
+                return {{"success", false}, {"message", "failed to start transaction"}};
+            }
 
+            int r1 = conn->execute("UPDATE friend_requests SET status=1 WHERE id=" + std::to_string(requestId));
+            int r2 = conn->execute("INSERT IGNORE INTO friends (user_id, friend_id) VALUES ("
+                + std::to_string(fromUser) + "," + std::to_string(toUser) + ")");
+            int r3 = conn->execute("INSERT IGNORE INTO friends (user_id, friend_id) VALUES ("
+                + std::to_string(toUser) + "," + std::to_string(fromUser) + ")");
+
+            if (r1 >= 0 && r2 >= 0 && r3 >= 0) {
+                success = tx.commit();
+            }
+        } else {
+            int r = conn->execute("UPDATE friend_requests SET status=2 WHERE id=" + std::to_string(requestId));
+            success = (r > 0);
+        }
+
+        db_->release(std::move(conn));
+        if (!success) return {{"success", false}, {"message", "operation failed"}};
         return {{"success", true}, {"accepted", accept}};
     }
 

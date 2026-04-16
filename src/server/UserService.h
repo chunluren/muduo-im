@@ -308,13 +308,23 @@ public:
             return {{"success", false}, {"message", "wrong password"}};
         }
 
-        // Delete user and related data
+        // 事务：级联删除用户相关数据（注：有外键 CASCADE 时可简化为单条 DELETE FROM users）
+        TransactionGuard tx(conn);
+        if (!tx.active()) {
+            db_->release(std::move(conn));
+            return {{"success", false}, {"message", "failed to start transaction"}};
+        }
+
         std::string uid = std::to_string(userId);
-        conn->execute("DELETE FROM friends WHERE user_id=" + uid + " OR friend_id=" + uid);
-        conn->execute("DELETE FROM group_members WHERE user_id=" + uid);
-        conn->execute("DELETE FROM friend_requests WHERE from_user=" + uid + " OR to_user=" + uid);
-        conn->execute("DELETE FROM users WHERE id=" + uid);
+        int r1 = conn->execute("DELETE FROM friends WHERE user_id=" + uid + " OR friend_id=" + uid);
+        int r2 = conn->execute("DELETE FROM group_members WHERE user_id=" + uid);
+        int r3 = conn->execute("DELETE FROM friend_requests WHERE from_user=" + uid + " OR to_user=" + uid);
+        int r4 = conn->execute("DELETE FROM users WHERE id=" + uid);
+
+        bool success = (r1 >= 0 && r2 >= 0 && r3 >= 0 && r4 >= 0) && tx.commit();
+
         db_->release(std::move(conn));
+        if (!success) return {{"success", false}, {"message", "delete failed"}};
         return {{"success", true}};
     }
 

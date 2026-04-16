@@ -193,7 +193,6 @@ public:
         auto conn = db_->acquire(3000);
         if (!conn || !conn->valid()) return {{"success", false}, {"message", "db error"}};
 
-        // 验证群主
         auto result = conn->query("SELECT owner_id FROM `groups` WHERE id=" + std::to_string(groupId));
         if (!result || mysql_num_rows(result.get()) == 0) {
             db_->release(std::move(conn));
@@ -205,10 +204,18 @@ public:
             return {{"success", false}, {"message", "only owner can delete group"}};
         }
 
-        // 删除群成员 + 群组
-        conn->execute("DELETE FROM group_members WHERE group_id=" + std::to_string(groupId));
-        conn->execute("DELETE FROM `groups` WHERE id=" + std::to_string(groupId));
+        TransactionGuard tx(conn);
+        if (!tx.active()) {
+            db_->release(std::move(conn));
+            return {{"success", false}, {"message", "failed to start transaction"}};
+        }
+
+        int r1 = conn->execute("DELETE FROM group_members WHERE group_id=" + std::to_string(groupId));
+        int r2 = conn->execute("DELETE FROM `groups` WHERE id=" + std::to_string(groupId));
+
+        bool success = (r1 >= 0 && r2 >= 0) && tx.commit();
         db_->release(std::move(conn));
+        if (!success) return {{"success", false}, {"message", "delete failed"}};
         return {{"success", true}};
     }
 

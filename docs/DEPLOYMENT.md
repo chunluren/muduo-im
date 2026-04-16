@@ -35,6 +35,17 @@ sudo dnf install -y gcc-c++ cmake \
     mysql-server redis
 ```
 
+### Redis 持久化配置（生产环境必须）
+
+生产环境必须启用 AOF 持久化避免消息丢失。详见 [REDIS_CONFIG.md](REDIS_CONFIG.md)。
+
+快速启用：
+```bash
+redis-cli CONFIG SET appendonly yes
+redis-cli CONFIG SET appendfsync everysec
+redis-cli CONFIG REWRITE
+```
+
 ## 数据库初始化
 
 启动 MySQL 服务，然后执行初始化脚本:
