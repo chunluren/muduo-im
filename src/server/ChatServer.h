@@ -35,6 +35,7 @@
 #include "websocket/WebSocketServer.h"
 #include "pool/MySQLPool.h"
 #include "pool/RedisPool.h"
+#include "util/CircuitBreaker.h"
 #include "net/EventLoop.h"
 #include "net/InetAddress.h"
 #include <nlohmann/json.hpp>
@@ -87,6 +88,8 @@ public:
         , messageService_(mysqlPool_)
         , onlineManager_(redisPool_)
         , jwtSecret_(jwtSecret)
+        , mysqlBreaker_(5, 2, 10)   // 连续 5 次失败打开，2 次成功恢复，10 秒超时
+        , redisBreaker_(5, 2, 10)
     {
         setupHttpRoutes();
         setupWebSocket();
@@ -946,8 +949,8 @@ private:
     // ==================== Redis Message Queue ====================
 
     void queueMessage(const std::string& msgJson) {
-        if (!redisPool_) {
-            // No Redis — direct MySQL write
+        if (!redisPool_ || !redisBreaker_.allow()) {
+            // No Redis 或熔断器打开 —— 直接降级到 MySQL
             directSaveMessage(msgJson);
             return;
         }
@@ -955,8 +958,10 @@ private:
         if (conn && conn->valid()) {
             conn->lpush("msg_queue", msgJson);
             redisPool_->release(std::move(conn));
+            redisBreaker_.recordSuccess();
         } else {
-            // Redis unavailable — fallback to direct MySQL write
+            // Redis unavailable — 记录失败并降级到 MySQL
+            redisBreaker_.recordFailure();
             directSaveMessage(msgJson);
         }
     }
@@ -980,6 +985,11 @@ private:
 
     void flushMessageQueue() {
         if (!redisPool_) return;
+
+        // MySQL 熔断器打开时跳过刷写，消息继续留在 Redis 队列
+        // 等熔断器恢复（半开态）后再尝试入库
+        if (!mysqlBreaker_.allow()) return;
+
         auto conn = redisPool_->acquire(3000);
         if (!conn || !conn->valid()) return;
 
@@ -995,22 +1005,33 @@ private:
         redisPool_->release(std::move(conn));
 
         // Batch insert to MySQL
+        bool allOk = true;
         for (auto& msgStr : messages) {
             auto j = json::parse(msgStr, nullptr, false);
             if (j.is_discarded()) continue;
 
-            std::string type = j.value("_type", "");
-            if (type == "private") {
-                messageService_.savePrivateMessage(
-                    j.value("msgId", ""), j.value("from", (int64_t)0),
-                    j.value("to", (int64_t)0), j.value("content", ""),
-                    j.value("timestamp", (int64_t)0));
-            } else if (type == "group") {
-                messageService_.saveGroupMessage(
-                    j.value("msgId", ""), j.value("groupId", (int64_t)0),
-                    j.value("from", (int64_t)0), j.value("content", ""),
-                    j.value("timestamp", (int64_t)0));
+            try {
+                std::string type = j.value("_type", "");
+                if (type == "private") {
+                    messageService_.savePrivateMessage(
+                        j.value("msgId", ""), j.value("from", (int64_t)0),
+                        j.value("to", (int64_t)0), j.value("content", ""),
+                        j.value("timestamp", (int64_t)0));
+                } else if (type == "group") {
+                    messageService_.saveGroupMessage(
+                        j.value("msgId", ""), j.value("groupId", (int64_t)0),
+                        j.value("from", (int64_t)0), j.value("content", ""),
+                        j.value("timestamp", (int64_t)0));
+                }
+            } catch (...) {
+                allOk = false;
             }
+        }
+
+        if (allOk) {
+            mysqlBreaker_.recordSuccess();
+        } else {
+            mysqlBreaker_.recordFailure();
         }
     }
 
@@ -1056,4 +1077,9 @@ private:
     OnlineManager onlineManager_;
 
     std::string jwtSecret_;
+
+    // 熔断器：保护 MySQL / Redis 调用，避免下游故障时把服务拖垮
+    // 打开时直接短路跳过，超时后进入半开态探测恢复
+    CircuitBreaker mysqlBreaker_;
+    CircuitBreaker redisBreaker_;
 };

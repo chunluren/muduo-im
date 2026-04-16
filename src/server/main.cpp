@@ -10,6 +10,7 @@
 #include "server/ChatServer.h"
 #include "common/Config.h"
 #include "net/EventLoop.h"
+#include "asynclogger/AsyncLogger.h"
 #include <iostream>
 #include <signal.h>
 
@@ -51,6 +52,15 @@ int main(int argc, char* argv[]) {
         std::cerr << "Warning: config file not found: " << configFile << ", using defaults" << std::endl;
     }
 
+    // ---- 启动异步日志（双缓冲，不阻塞业务线程）----
+    {
+        std::string logFile = config.get("server.log_file", "muduo-im.log");
+        int logLevel = config.getInt("server.log_level", 1);  // 默认 INFO
+        AsyncLogger::instance().setLogFile(logFile);
+        AsyncLogger::instance().setLogLevel(static_cast<LogLevel>(logLevel));
+        AsyncLogger::instance().start();
+    }
+
     // ---- MySQL 连接池配置 ----
     MySQLPoolConfig mysqlConfig;
     mysqlConfig.host = config.get("mysql.host", "127.0.0.1");
@@ -86,7 +96,14 @@ int main(int argc, char* argv[]) {
     std::cout << "WebSocket: ws://localhost:" << wsPort << std::endl;
     std::cout << "Config: " << configFile << std::endl;
 
+    LOG_INFO("muduo-im started: http=%u ws=%u config=%s",
+             (unsigned)httpPort, (unsigned)wsPort, configFile.c_str());
+
     loop.loop();
+
+    LOG_INFO("muduo-im shutting down");
+    AsyncLogger::instance().stop();
+
     std::cout << "Server stopped." << std::endl;
     return 0;
 }
