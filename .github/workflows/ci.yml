@@ -54,8 +54,6 @@ jobs:
     - name: Initialize databases
       run: |
         mysql -h 127.0.0.1 -u root muduo_im_test < sql/init.sql
-        mysql -h 127.0.0.1 -u root -e "CREATE DATABASE muduo_im DEFAULT CHARACTER SET utf8mb4"
-        mysql -h 127.0.0.1 -u root muduo_im < sql/init.sql
 
     - name: Build muduo-im
       run: |

@@ -63,14 +63,16 @@ redis-cli CONFIG REWRITE
 # 启动 MySQL
 sudo systemctl start mysql
 
-# 初始化数据库和表
-mysql -u root < sql/init.sql
+# 创建数据库
+mysql -u root -e "CREATE DATABASE IF NOT EXISTS muduo_im DEFAULT CHARACTER SET utf8mb4"
+
+# 初始化表结构（init.sql 不再自带 CREATE DATABASE，需要在命令行指定目标库）
+mysql -u root muduo_im < sql/init.sql
 ```
 
 该脚本会:
-1. 创建 `muduo_im` 数据库（utf8mb4 字符集）
-2. 创建 users、friends、friend_requests、groups、group_members、private_messages、group_messages 七张表
-3. 建立必要的索引
+1. 在指定库内创建 users、friends、friend_requests、groups、group_members、private_messages、group_messages、audit_log 八张表
+2. 建立必要的索引和外键约束（ON DELETE CASCADE）
 
 ## 编译
 

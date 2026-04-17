@@ -1,5 +1,6 @@
-CREATE DATABASE IF NOT EXISTS muduo_im DEFAULT CHARACTER SET utf8mb4;
-USE muduo_im;
+-- 注意：本脚本不创建/切换数据库；调用方需通过命令行指定目标 db，例如：
+--   mysql -u root muduo_im < sql/init.sql
+-- 这样同一脚本可用于生产 (muduo_im) 和测试 (muduo_im_test) 两套库。
 
 CREATE TABLE IF NOT EXISTS users (
     id BIGINT PRIMARY KEY AUTO_INCREMENT,
