@@ -9,8 +9,8 @@ void testSaveAndRetrievePrivateMessage() {
     std::cout << "=== testSaveAndRetrievePrivateMessage ===" << std::endl;
     cleanTestDb();
     UserService usvc(getTestDb(), "secret");
-    int64_t alice = usvc.registerUser("alice_m", "p", "")["userId"].get<int64_t>();
-    int64_t bob = usvc.registerUser("bob_m", "p", "")["userId"].get<int64_t>();
+    int64_t alice = usvc.registerUser("alice_m", "pass1234", "")["userId"].get<int64_t>();
+    int64_t bob = usvc.registerUser("bob_m", "pass1234", "")["userId"].get<int64_t>();
     MessageService msvc(getTestDb());
 
     int64_t ts = Protocol::nowMs();
@@ -27,8 +27,8 @@ void testRecallMessage() {
     std::cout << "=== testRecallMessage ===" << std::endl;
     cleanTestDb();
     UserService usvc(getTestDb(), "secret");
-    int64_t alice = usvc.registerUser("alice_r", "p", "")["userId"].get<int64_t>();
-    int64_t bob = usvc.registerUser("bob_r", "p", "")["userId"].get<int64_t>();
+    int64_t alice = usvc.registerUser("alice_r", "pass1234", "")["userId"].get<int64_t>();
+    int64_t bob = usvc.registerUser("bob_r", "pass1234", "")["userId"].get<int64_t>();
     MessageService msvc(getTestDb());
 
     int64_t ts = Protocol::nowMs();
@@ -48,8 +48,8 @@ void testRecallByOtherUser() {
     std::cout << "=== testRecallByOtherUser ===" << std::endl;
     cleanTestDb();
     UserService usvc(getTestDb(), "secret");
-    int64_t alice = usvc.registerUser("alice_x", "p", "")["userId"].get<int64_t>();
-    int64_t bob = usvc.registerUser("bob_x", "p", "")["userId"].get<int64_t>();
+    int64_t alice = usvc.registerUser("alice_x", "pass1234", "")["userId"].get<int64_t>();
+    int64_t bob = usvc.registerUser("bob_x", "pass1234", "")["userId"].get<int64_t>();
     MessageService msvc(getTestDb());
 
     msvc.savePrivateMessage("msg-x", alice, bob, "from alice", Protocol::nowMs());
@@ -65,8 +65,8 @@ void testSearchMessages() {
     std::cout << "=== testSearchMessages ===" << std::endl;
     cleanTestDb();
     UserService usvc(getTestDb(), "secret");
-    int64_t alice = usvc.registerUser("alice_s", "p", "")["userId"].get<int64_t>();
-    int64_t bob = usvc.registerUser("bob_s", "p", "")["userId"].get<int64_t>();
+    int64_t alice = usvc.registerUser("alice_s", "pass1234", "")["userId"].get<int64_t>();
+    int64_t bob = usvc.registerUser("bob_s", "pass1234", "")["userId"].get<int64_t>();
     MessageService msvc(getTestDb());
 
     int64_t ts = Protocol::nowMs();

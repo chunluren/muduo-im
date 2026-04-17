@@ -15,10 +15,12 @@
 #include <string>
 #include <nlohmann/json.hpp>
 #include <chrono>
+#include <cstring>
 #include <random>
 #include <sstream>
 #include <iomanip>
 #include <openssl/evp.h>
+#include <argon2.h>
 
 using json = nlohmann::json;
 
@@ -309,35 +311,76 @@ inline std::string sha256(const std::string& input) {
 }
 
 /**
- * @brief 密码哈希（固定 salt + SHA-256）
+ * @brief 密码哈希（Argon2id，每用户独立随机 salt）
  *
- * 对明文密码进行哈希处理后再存入数据库，防止数据库泄露时明文密码暴露。
- * 当前策略：固定 salt "muduo-im-salt-v1" 拼接在密码前面，再做 SHA-256。
+ * 使用 Argon2id 算法（2015 年 PHC 获胜者）对明文密码进行哈希。
+ * 相比 SHA-256，Argon2id 内置随机 salt + 高内存开销（64 MiB）+ 自适应迭代次数，
+ * 能有效抵抗 GPU/ASIC 暴力破解和彩虹表攻击。
  *
- * @note 安全说明：固定 salt + 单次 SHA-256 的安全性较弱，容易受彩虹表攻击。
- *       生产环境应使用 bcrypt、scrypt 或 Argon2 等专用密码哈希算法，
- *       它们内置随机 salt 和自适应迭代次数，能有效抵抗暴力破解。
+ * 参数（OWASP 推荐 "minimum" 参数）：
+ * - t_cost = 2（迭代次数）
+ * - m_cost = 64 MiB（内存开销）
+ * - parallelism = 1
+ * - hash 长度 32 字节
+ *
+ * 返回格式：$argon2id$v=19$m=65536,t=2,p=1$<salt_b64>$<hash_b64>
+ * 约 100 字节，可直接存入 VARCHAR(128) 字段。
  *
  * @param password 用户输入的明文密码
- * @return 哈希后的密码字符串（64 字符 hex）
+ * @return Argon2id 编码字符串；失败返回空串（调用方应判空）
  */
 inline std::string hashPassword(const std::string& password) {
-    std::string salt = "muduo-im-salt-v1";  // 简化: 固定 salt
-    return sha256(salt + password);
+    uint8_t salt[16];
+    // 生成 128 位随机 salt（每个密码独立）
+    std::random_device rd;
+    std::mt19937_64 gen(rd());
+    for (int i = 0; i < 16; i += 8) {
+        uint64_t v = gen();
+        std::memcpy(salt + i, &v, 8);
+    }
+
+    constexpr uint32_t t_cost = 2;
+    constexpr uint32_t m_cost = 1 << 16; // 64 MiB
+    constexpr uint32_t parallelism = 1;
+    constexpr size_t hash_len = 32;
+    constexpr size_t encoded_len = 128;
+
+    char encoded[encoded_len];
+    int ret = argon2id_hash_encoded(
+        t_cost, m_cost, parallelism,
+        password.data(), password.size(),
+        salt, sizeof(salt),
+        hash_len,
+        encoded, encoded_len
+    );
+    if (ret != ARGON2_OK) {
+        return "";  // 调用方判空
+    }
+    return std::string(encoded);
 }
 
 /**
  * @brief 验证密码是否匹配
  *
- * 将用户输入的明文密码经过相同的哈希流程（salt + SHA-256），
- * 与数据库中存储的哈希值进行比较。
+ * 兼容两种格式：
+ * 1. 新格式：Argon2id 编码字符串（以 "$argon2id$" 开头，约 100 字节）
+ * 2. 旧格式：SHA-256 hex（64 字符，无 "$"），来自早期的 sha256("muduo-im-salt-v1" + password)
+ *
+ * 旧格式用于平滑过渡：数据库中的老密码继续可用，用户登录或改密后会被替换为 Argon2id 格式。
  *
  * @param password 用户输入的明文密码
- * @param hashed 数据库中存储的密码哈希值
+ * @param encoded 数据库中存储的密码哈希值
  * @return true 密码匹配；false 密码不匹配
  */
-inline bool verifyPassword(const std::string& password, const std::string& hashed) {
-    return hashPassword(password) == hashed;
+inline bool verifyPassword(const std::string& password, const std::string& encoded) {
+    if (encoded.empty()) return false;
+    // 兼容旧的 SHA256 格式（64 字符 hex，无 '$'）
+    if (encoded.size() == 64 && encoded.find('$') == std::string::npos) {
+        std::string legacy = sha256("muduo-im-salt-v1" + password);
+        return legacy == encoded;
+    }
+    // 新格式：Argon2id
+    return argon2id_verify(encoded.c_str(), password.data(), password.size()) == ARGON2_OK;
 }
 
 }  // namespace Protocol

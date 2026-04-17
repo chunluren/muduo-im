@@ -35,6 +35,15 @@ sudo dnf install -y gcc-c++ cmake \
     mysql-server redis
 ```
 
+### 新增依赖
+
+- libargon2-dev：Argon2id 密码哈希库
+
+```bash
+sudo apt install -y libargon2-dev         # Ubuntu / Debian
+sudo dnf install -y libargon2-devel       # CentOS / Rocky（若可用）
+```
+
 ### Redis 持久化配置（生产环境必须）
 
 生产环境必须启用 AOF 持久化避免消息丢失。详见 [REDIS_CONFIG.md](REDIS_CONFIG.md)。
@@ -267,3 +276,59 @@ readinessProbe:
 ```
 
 `/health` 返回 503 时 K8s 会停止流量；返回 200 时恢复流量。
+
+## 环境变量（生产必配）
+
+```bash
+# JWT 签名密钥（必须覆盖 config.ini 默认值）
+export MUDUO_IM_JWT_SECRET="$(openssl rand -hex 32)"
+```
+
+未设置时启动会输出 WARNING 并使用硬编码默认值（仅开发用）。
+
+## 审计日志查询
+
+```sql
+-- 最近 100 条敏感操作
+SELECT user_id, action, target, ip, created_at
+FROM audit_log
+ORDER BY id DESC LIMIT 100;
+
+-- 某用户的全部操作
+SELECT * FROM audit_log WHERE user_id=<id> ORDER BY id DESC;
+
+-- 登录失败统计
+SELECT ip, COUNT(*) as failures
+FROM audit_log
+WHERE action='login_failed' AND created_at > NOW() - INTERVAL 1 HOUR
+GROUP BY ip
+ORDER BY failures DESC;
+```
+
+## 持续集成
+
+`.github/workflows/ci.yml` 在每次 push/PR 触发：
+1. 启动 MySQL 8 + Redis 6 service container
+2. 安装 libargon2-dev 等依赖
+3. 构建 muduo-im 和 mymuduo-http
+4. 运行所有单元测试
+
+CI 徽章：在 GitHub 仓库 Actions 页面可查看。
+
+## Docker 部署
+
+```bash
+# 环境变量（必配）
+export MUDUO_IM_JWT_SECRET=$(openssl rand -hex 32)
+
+# 一键启动
+docker-compose up -d
+
+# 查看日志
+docker-compose logs -f muduo-im
+
+# 停止
+docker-compose down
+```
+
+镜像含 MySQL + Redis + muduo-im 完整栈。更多细节见 TECHNICAL_DETAILS.md 的「生产级部署」小节。

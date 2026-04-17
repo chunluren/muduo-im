@@ -7,8 +7,8 @@ void testCreateAndJoinGroup() {
     std::cout << "=== testCreateAndJoinGroup ===" << std::endl;
     cleanTestDb();
     UserService usvc(getTestDb(), "secret");
-    int64_t alice = usvc.registerUser("alice_gs", "p", "")["userId"].get<int64_t>();
-    int64_t bob = usvc.registerUser("bob_gs", "p", "")["userId"].get<int64_t>();
+    int64_t alice = usvc.registerUser("alice_gs", "pass1234", "")["userId"].get<int64_t>();
+    int64_t bob = usvc.registerUser("bob_gs", "pass1234", "")["userId"].get<int64_t>();
     GroupService gsvc(getTestDb());
 
     auto create = gsvc.createGroup(alice, "Test Group");
@@ -28,7 +28,7 @@ void testOwnerCannotLeave() {
     std::cout << "=== testOwnerCannotLeave ===" << std::endl;
     cleanTestDb();
     UserService usvc(getTestDb(), "secret");
-    int64_t alice = usvc.registerUser("alice_o", "p", "")["userId"].get<int64_t>();
+    int64_t alice = usvc.registerUser("alice_o", "pass1234", "")["userId"].get<int64_t>();
     GroupService gsvc(getTestDb());
 
     int64_t groupId = gsvc.createGroup(alice, "G")["groupId"].get<int64_t>();
@@ -42,8 +42,8 @@ void testOnlyOwnerCanDelete() {
     std::cout << "=== testOnlyOwnerCanDelete ===" << std::endl;
     cleanTestDb();
     UserService usvc(getTestDb(), "secret");
-    int64_t alice = usvc.registerUser("alice_d", "p", "")["userId"].get<int64_t>();
-    int64_t bob = usvc.registerUser("bob_d", "p", "")["userId"].get<int64_t>();
+    int64_t alice = usvc.registerUser("alice_d", "pass1234", "")["userId"].get<int64_t>();
+    int64_t bob = usvc.registerUser("bob_d", "pass1234", "")["userId"].get<int64_t>();
     GroupService gsvc(getTestDb());
 
     int64_t groupId = gsvc.createGroup(alice, "G")["groupId"].get<int64_t>();
@@ -64,8 +64,8 @@ void testKickMember() {
     std::cout << "=== testKickMember ===" << std::endl;
     cleanTestDb();
     UserService usvc(getTestDb(), "secret");
-    int64_t alice = usvc.registerUser("alice_k", "p", "")["userId"].get<int64_t>();
-    int64_t bob = usvc.registerUser("bob_k", "p", "")["userId"].get<int64_t>();
+    int64_t alice = usvc.registerUser("alice_k", "pass1234", "")["userId"].get<int64_t>();
+    int64_t bob = usvc.registerUser("bob_k", "pass1234", "")["userId"].get<int64_t>();
     GroupService gsvc(getTestDb());
 
     int64_t groupId = gsvc.createGroup(alice, "G")["groupId"].get<int64_t>();

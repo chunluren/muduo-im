@@ -47,6 +47,7 @@ target_link_libraries(muduo-im
     ZLIB::ZLIB
     ${MYSQL_LIBRARY}
     ${REDIS_LIBRARY}
+    argon2
     pthread
 )
 
@@ -67,6 +68,7 @@ foreach(TEST_FILE ${TEST_SOURCES})
         ZLIB::ZLIB
         ${MYSQL_LIBRARY}
         ${REDIS_LIBRARY}
+        argon2
         pthread
     )
     add_test(NAME ${TEST_NAME} COMMAND ${TEST_NAME})

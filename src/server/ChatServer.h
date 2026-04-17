@@ -25,6 +25,7 @@
 
 #include "common/JWT.h"
 #include "common/Protocol.h"
+#include "server/AuditService.h"
 #include "server/UserService.h"
 #include "server/OnlineManager.h"
 #include "server/FriendService.h"
@@ -87,6 +88,7 @@ public:
         , groupService_(mysqlPool_)
         , messageService_(mysqlPool_)
         , onlineManager_(redisPool_)
+        , auditService_(mysqlPool_)
         , jwtSecret_(jwtSecret)
         , mysqlBreaker_(5, 2, 10)   // 连续 5 次失败打开，2 次成功恢复，10 秒超时
         , redisBreaker_(5, 2, 10)
@@ -178,6 +180,20 @@ private:
         return true;
     }
 
+    /// 取客户端 IP：优先 X-Real-IP / X-Forwarded-For 头，降级为 "unknown"
+    static std::string getClientIp(const HttpRequest& req) {
+        std::string ip = req.getHeader("x-real-ip");
+        if (!ip.empty()) return ip;
+        ip = req.getHeader("x-forwarded-for");
+        if (!ip.empty()) {
+            // X-Forwarded-For 可能包含多个 IP，取首个
+            auto comma = ip.find(',');
+            if (comma != std::string::npos) ip = ip.substr(0, comma);
+            return ip;
+        }
+        return "unknown";
+    }
+
     // ==================== HTTP Route Table ====================
 
     void setupHttpRoutes() {
@@ -236,17 +252,35 @@ private:
     void handleRegister(const HttpRequest& req, HttpResponse& resp) {
         json j;
         if (!parseJsonBody(req, resp, j)) return;
-        resp.setJson(userService_.registerUser(
-            j.value("username", ""), j.value("password", ""), j.value("nickname", "")
-        ).dump());
+        std::string username = j.value("username", "");
+        auto result = userService_.registerUser(username, j.value("password", ""), j.value("nickname", ""));
+
+        // 审计：注册成功/失败均留痕
+        std::string ip = getClientIp(req);
+        if (result.value("success", false)) {
+            int64_t newUserId = result.value("userId", (int64_t)0);
+            auditService_.log(newUserId, "register", username, ip);
+        } else {
+            auditService_.log(0, "register_failed", username, ip, result.value("message", ""));
+        }
+        resp.setJson(result.dump());
     }
 
     void handleLogin(const HttpRequest& req, HttpResponse& resp) {
         json j;
         if (!parseJsonBody(req, resp, j)) return;
-        resp.setJson(userService_.login(
-            j.value("username", ""), j.value("password", "")
-        ).dump());
+        std::string username = j.value("username", "");
+        auto result = userService_.login(username, j.value("password", ""));
+
+        // 审计：登录成功/失败均留痕（失败可用于检测暴力破解）
+        std::string ip = getClientIp(req);
+        if (result.value("success", false)) {
+            int64_t uid = result.value("userId", (int64_t)0);
+            auditService_.log(uid, "login", username, ip);
+        } else {
+            auditService_.log(0, "login_failed", username, ip, result.value("message", ""));
+        }
+        resp.setJson(result.dump());
     }
 
     // ==================== Route Handlers: Friends ====================
@@ -383,7 +417,12 @@ private:
         if (!parseJsonBody(req, resp, j)) return;
         int64_t groupId = j.value("groupId", (int64_t)0);
         int64_t targetUserId = j.value("userId", (int64_t)0);
-        resp.setJson(groupService_.kickMember(userId, groupId, targetUserId).dump());
+        auto result = groupService_.kickMember(userId, groupId, targetUserId);
+        if (result.value("success", false)) {
+            auditService_.log(userId, "kick_member", std::to_string(targetUserId),
+                              getClientIp(req), "groupId=" + std::to_string(groupId));
+        }
+        resp.setJson(result.dump());
     }
 
     // ==================== Route Handlers: Messages ====================
@@ -475,9 +514,13 @@ private:
         if (userId < 0) return;
         json j;
         if (!parseJsonBody(req, resp, j)) return;
-        resp.setJson(userService_.changePassword(
+        auto result = userService_.changePassword(
             userId, j.value("oldPassword", ""), j.value("newPassword", "")
-        ).dump());
+        );
+        if (result.value("success", false)) {
+            auditService_.log(userId, "change_password", "", getClientIp(req));
+        }
+        resp.setJson(result.dump());
     }
 
     void handleDeleteAccount(const HttpRequest& req, HttpResponse& resp) {
@@ -485,7 +528,11 @@ private:
         if (userId < 0) return;
         json j;
         if (!parseJsonBody(req, resp, j)) return;
-        resp.setJson(userService_.deleteAccount(userId, j.value("password", "")).dump());
+        auto result = userService_.deleteAccount(userId, j.value("password", ""));
+        if (result.value("success", false)) {
+            auditService_.log(userId, "delete_account", "", getClientIp(req));
+        }
+        resp.setJson(result.dump());
     }
 
     // ==================== Route Handlers: Upload ====================
@@ -1124,6 +1171,7 @@ private:
     GroupService groupService_;
     MessageService messageService_;
     OnlineManager onlineManager_;
+    AuditService auditService_;
 
     std::string jwtSecret_;
 

@@ -18,8 +18,12 @@
 #include "common/Protocol.h"
 #include "pool/MySQLPool.h"
 #include <nlohmann/json.hpp>
-#include <string>
+#include <cctype>
+#include <chrono>
 #include <memory>
+#include <mutex>
+#include <string>
+#include <unordered_map>
 
 using json = nlohmann::json;
 
@@ -64,8 +68,12 @@ public:
         if (username.empty() || password.empty()) {
             return {{"success", false}, {"message", "username and password required"}};
         }
-        if (username.size() > 64 || password.size() > 64) {
-            return {{"success", false}, {"message", "username or password too long"}};
+        if (username.size() < 3 || username.size() > 32) {
+            return {{"success", false}, {"message", "username must be 3-32 characters"}};
+        }
+        // 密码强度校验：8-72 字符，至少包含字母 + 数字
+        if (!isPasswordStrong(password)) {
+            return {{"success", false}, {"message", "password must be 8-72 characters and contain both letters and digits"}};
         }
 
         auto conn = db_->acquire(3000);
@@ -122,6 +130,20 @@ public:
             return {{"success", false}, {"message", "username and password required"}};
         }
 
+        int64_t nowMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count();
+
+        // 检查是否被锁定（连续失败过多会进入冷却期）
+        {
+            std::lock_guard<std::mutex> lock(loginMutex_);
+            auto it = loginAttempts_.find(username);
+            if (it != loginAttempts_.end() && it->second.lockedUntilMs > nowMs) {
+                int64_t remainSec = (it->second.lockedUntilMs - nowMs) / 1000;
+                return {{"success", false},
+                        {"message", "account locked, retry in " + std::to_string(remainSec) + " seconds"}};
+            }
+        }
+
         auto conn = db_->acquire(3000);
         if (!conn || !conn->valid()) {
             return {{"success", false}, {"message", "database error"}};
@@ -132,6 +154,7 @@ public:
         db_->release(std::move(conn));
 
         if (!result || mysql_num_rows(result.get()) == 0) {
+            recordLoginFailure(username, nowMs);
             return {{"success", false}, {"message", "user not found"}};
         }
 
@@ -141,7 +164,14 @@ public:
         std::string nick = row[2] ? row[2] : "";
 
         if (!Protocol::verifyPassword(password, storedHash)) {
+            recordLoginFailure(username, nowMs);
             return {{"success", false}, {"message", "wrong password"}};
+        }
+
+        // 登录成功：清空失败计数
+        {
+            std::lock_guard<std::mutex> lock(loginMutex_);
+            loginAttempts_.erase(username);
         }
 
         std::string token = jwt_.generate(userId);
@@ -264,8 +294,8 @@ public:
 
     /// 修改密码
     json changePassword(int64_t userId, const std::string& oldPassword, const std::string& newPassword) {
-        if (newPassword.empty() || newPassword.size() < 6) {
-            return {{"success", false}, {"message", "new password must be at least 6 characters"}};
+        if (!isPasswordStrong(newPassword)) {
+            return {{"success", false}, {"message", "new password must be 8-72 characters and contain both letters and digits"}};
         }
 
         auto conn = db_->acquire(3000);
@@ -332,6 +362,39 @@ public:
     JWT& jwt() { return jwt_; }
 
 private:
+    /// 密码强度校验：8-72 字符，至少包含一个字母和一个数字
+    static bool isPasswordStrong(const std::string& pw) {
+        if (pw.size() < 8 || pw.size() > 72) return false;
+        bool hasAlpha = false, hasDigit = false;
+        for (char c : pw) {
+            if (std::isalpha(static_cast<unsigned char>(c))) hasAlpha = true;
+            else if (std::isdigit(static_cast<unsigned char>(c))) hasDigit = true;
+        }
+        return hasAlpha && hasDigit;
+    }
+
+    /// 记录登录失败，连续失败 kMaxLoginFailures 次后触发锁定
+    void recordLoginFailure(const std::string& username, int64_t nowMs) {
+        std::lock_guard<std::mutex> lock(loginMutex_);
+        auto& attempt = loginAttempts_[username];
+        attempt.failures++;
+        if (attempt.failures >= kMaxLoginFailures) {
+            attempt.lockedUntilMs = nowMs + kLockoutDurationMs;
+            attempt.failures = 0;
+        }
+    }
+
     std::shared_ptr<MySQLPool> db_;  ///< MySQL 连接池，提供数据库连接的获取与释放
     JWT jwt_;                        ///< JWT 实例，负责 Token 的生成与验证
+
+    // ---- 登录失败限制（内存态，进程重启清零）----
+    struct LoginAttempt {
+        int failures = 0;
+        int64_t lockedUntilMs = 0;
+    };
+    std::mutex loginMutex_;
+    std::unordered_map<std::string, LoginAttempt> loginAttempts_;
+
+    static constexpr int kMaxLoginFailures = 5;                    ///< 连续失败阈值
+    static constexpr int64_t kLockoutDurationMs = 15 * 60 * 1000;  ///< 锁定时长：15 分钟
 };

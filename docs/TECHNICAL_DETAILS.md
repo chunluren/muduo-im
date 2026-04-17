@@ -382,3 +382,87 @@ SIGTERM →
 - successCount++ / failCount++ 各自统计
 - CircuitBreaker 仅当全部失败时才打开（成功一条就重置）
 - 一条坏数据不会阻塞 99 条好数据
+
+## 安全加固
+
+### Argon2id 密码哈希
+
+- **参数**：`t_cost=2, m_cost=64MiB, parallelism=1`（OWASP 推荐 minimum）
+- **Salt**：每个用户独立 128-bit 随机 salt，通过 `std::random_device + mt19937_64` 生成
+- **格式**：`$argon2id$v=19$m=65536,t=2,p=1$<salt_b64>$<hash_b64>`（约 97 字节）
+- **验证成本**：单次 ~100ms（相比 SHA256 的 <1μs），抗 GPU 暴力破解
+
+### 迁移策略（平滑升级）
+
+`verifyPassword` 同时接受两种格式：
+- 64 字符十六进制（旧 SHA256）
+- `$argon2id$` 前缀（新）
+
+旧账号登录无需重置密码，下次 `changePassword` 会写入 Argon2id 格式。
+
+### 登录失败限流
+
+in-memory `unordered_map<username, LoginAttempt>`：
+- 连续失败 5 次 → 锁定 15 分钟（期间所有登录请求直接返回 "locked"）
+- 成功登录清零计数
+- 进程重启计数清零（分布式部署应改用 Redis）
+
+**抗暴力破解：** 即使密码弱，攻击者每小时最多试 5 次。
+
+### JWT Secret 分层
+
+```
+环境变量 MUDUO_IM_JWT_SECRET（最高优先级，生产用）
+    ↓ 未设置
+config.ini server.jwt_secret（开发用）
+    ↓ 未设置
+硬编码 fallback（输出 WARNING 到 stderr）
+```
+
+### 审计日志
+
+每条敏感操作写入 `audit_log` 表：
+- `user_id`, `action`, `target`, `ip`, `detail`, `created_at`
+- action 枚举：register/login/login_failed/change_password/delete_account/kick_member
+- 索引：`(user_id, created_at)` + `(action, created_at)`
+- **无外键**：用户删除后审计记录保留（forensics 需要）
+
+## 生产级部署
+
+### Docker 镜像设计
+
+多阶段构建（最终镜像约 300MB）：
+- **Builder 阶段**：ubuntu:22.04 + 编译工具链 + 源码 + make
+- **Runtime 阶段**：ubuntu:22.04 + 仅运行时库（libssl3, libmysqlclient21, libhiredis0.14, libargon2-1）
+
+HEALTHCHECK 内置：`curl -f http://localhost:8080/health`
+
+### docker-compose 编排
+
+```
+[muduo-im]
+  ↓ depends_on: mysql (healthy), redis (healthy)
+[mysql:8]  [redis:6 --appendonly yes --appendfsync everysec]
+```
+
+### GitHub Actions CI
+
+触发：每次 push/PR 到 main 分支。
+
+流程：
+1. Service container：MySQL 8 + Redis 6
+2. 初始化测试数据库（`mysql < sql/init.sql`）
+3. 编译 muduo-im（Release 模式）
+4. 运行 18 项单元测试（4 个 Service）
+5. 运行 mymuduo-http 框架测试（8 项）
+
+### 结构化日志
+
+`src/common/Logging.h` 提供 JSON 格式日志宏：
+
+```cpp
+LOG_EVENT("login", "user=alice ip=1.2.3.4");
+// 输出: {"ts":"2026-04-17T12:34:56Z","level":"info","event":"login","detail":"user=alice ip=1.2.3.4"}
+```
+
+JSON 格式便于被 ELK / Loki / Splunk 采集索引。

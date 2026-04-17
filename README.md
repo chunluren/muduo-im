@@ -39,6 +39,14 @@
 - WebSocket 心跳保活（30s ping，60s 空闲断开）
 - 优雅关闭（SIGTERM 刷队列后退出）
 - 单条消息隔离（消息队列刷写时单条失败不影响批次）
+- Argon2id 密码哈希（per-user salt，兼容旧 SHA256 账号平滑升级）
+- 密码强度校验（8-72 字符，必须同时含字母和数字）
+- 登录失败锁定（连续 5 次失败后 15 分钟内拒绝登录）
+- JWT 密钥环境变量化（`MUDUO_IM_JWT_SECRET`，生产部署必配）
+- 审计日志（敏感操作写入 `audit_log` 表：注册/登录/改密/注销/踢人）
+- GitHub Actions CI（MySQL + Redis service container 自动化测试）
+- Docker 一键部署（Dockerfile 多阶段构建 + docker-compose 全栈编排）
+- 结构化 JSON 日志（`LOG_EVENT` 宏，便于 ELK / Loki / Splunk 采集）
 
 ## 技术栈
 
@@ -215,3 +223,21 @@ cd build && make test_user_service test_friend_service test_group_service test_m
 需要先创建测试数据库:
 sudo mysql -e "CREATE DATABASE IF NOT EXISTS muduo_im_test DEFAULT CHARACTER SET utf8mb4;"
 sudo mysql muduo_im_test < sql/init.sql
+
+## Docker 部署
+
+```bash
+# 环境变量
+export MUDUO_IM_JWT_SECRET=$(openssl rand -hex 32)
+
+# 一键启动
+docker-compose up -d
+
+# 查看日志
+docker-compose logs -f muduo-im
+
+# 停止
+docker-compose down
+```
+
+镜像含 MySQL + Redis + muduo-im 完整栈。

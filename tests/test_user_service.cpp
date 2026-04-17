@@ -7,10 +7,10 @@ void testRegisterAndLogin() {
     cleanTestDb();
     UserService svc(getTestDb(), "test-secret");
 
-    auto reg = svc.registerUser("alice", "pass123", "Alice");
+    auto reg = svc.registerUser("alice", "pass1234", "Alice");
     ASSERT_TRUE(reg["success"].get<bool>());
 
-    auto login = svc.login("alice", "pass123");
+    auto login = svc.login("alice", "pass1234");
     ASSERT_TRUE(login["success"].get<bool>());
     ASSERT_TRUE(!login["token"].get<std::string>().empty());
 
@@ -25,8 +25,8 @@ void testRegisterDuplicate() {
     cleanTestDb();
     UserService svc(getTestDb(), "test-secret");
 
-    svc.registerUser("bob", "pass", "");
-    auto dup = svc.registerUser("bob", "pass", "");
+    svc.registerUser("bobby", "pass1234", "");
+    auto dup = svc.registerUser("bobby", "pass1234", "");
     ASSERT_TRUE(!dup["success"].get<bool>());
 
     std::cout << "PASS" << std::endl;
@@ -37,8 +37,8 @@ void testLoginWrongPassword() {
     cleanTestDb();
     UserService svc(getTestDb(), "test-secret");
 
-    svc.registerUser("charlie", "right", "");
-    auto login = svc.login("charlie", "wrong");
+    svc.registerUser("charlie", "right123", "");
+    auto login = svc.login("charlie", "wrong123");
     ASSERT_TRUE(!login["success"].get<bool>());
 
     std::cout << "PASS" << std::endl;
@@ -49,7 +49,7 @@ void testProfileUpdate() {
     cleanTestDb();
     UserService svc(getTestDb(), "test-secret");
 
-    auto reg = svc.registerUser("dave", "pass", "Dave");
+    auto reg = svc.registerUser("dave123", "pass1234", "Dave");
     int64_t userId = reg["userId"].get<int64_t>();
 
     svc.updateProfile(userId, "NewDave", "https://example.com/avatar.png");
@@ -64,9 +64,9 @@ void testSearchUsers() {
     cleanTestDb();
     UserService svc(getTestDb(), "test-secret");
 
-    svc.registerUser("alice123", "p", "");
-    svc.registerUser("alice456", "p", "");
-    svc.registerUser("bob", "p", "");
+    svc.registerUser("alice123", "pass1234", "");
+    svc.registerUser("alice456", "pass1234", "");
+    svc.registerUser("bobby99", "pass1234", "");
 
     auto search = svc.searchUsers("alice");
     ASSERT_TRUE(search["success"].get<bool>());
@@ -81,19 +81,43 @@ void testChangePassword() {
     cleanTestDb();
     UserService svc(getTestDb(), "test-secret");
 
-    auto reg = svc.registerUser("eve", "oldpass", "");
+    auto reg = svc.registerUser("evelyn", "oldpass1", "");
     int64_t userId = reg["userId"].get<int64_t>();
 
-    auto change = svc.changePassword(userId, "oldpass", "newpass");
+    auto change = svc.changePassword(userId, "oldpass1", "newpass1");
     ASSERT_TRUE(change["success"].get<bool>());
 
     // Old password should fail
-    auto loginOld = svc.login("eve", "oldpass");
+    auto loginOld = svc.login("evelyn", "oldpass1");
     ASSERT_TRUE(!loginOld["success"].get<bool>());
 
     // New password should work
-    auto loginNew = svc.login("eve", "newpass");
+    auto loginNew = svc.login("evelyn", "newpass1");
     ASSERT_TRUE(loginNew["success"].get<bool>());
+
+    std::cout << "PASS" << std::endl;
+}
+
+void testWeakPasswordRejected() {
+    std::cout << "=== testWeakPasswordRejected ===" << std::endl;
+    cleanTestDb();
+    UserService svc(getTestDb(), "test-secret");
+
+    // Too short
+    auto tooShort = svc.registerUser("user1", "pass1", "");
+    ASSERT_TRUE(!tooShort["success"].get<bool>());
+
+    // No digit
+    auto noDigit = svc.registerUser("user2", "onlyletters", "");
+    ASSERT_TRUE(!noDigit["success"].get<bool>());
+
+    // No letter
+    auto noAlpha = svc.registerUser("user3", "12345678", "");
+    ASSERT_TRUE(!noAlpha["success"].get<bool>());
+
+    // OK
+    auto ok = svc.registerUser("user4", "good1234", "");
+    ASSERT_TRUE(ok["success"].get<bool>());
 
     std::cout << "PASS" << std::endl;
 }
@@ -106,6 +130,7 @@ int main() {
     testProfileUpdate();
     testSearchUsers();
     testChangePassword();
+    testWeakPasswordRejected();
     std::cout << "All UserService tests passed!" << std::endl;
     return 0;
 }

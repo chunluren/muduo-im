@@ -1,0 +1,85 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-22.04
+
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: ''
+          MYSQL_ALLOW_EMPTY_PASSWORD: yes
+          MYSQL_DATABASE: muduo_im_test
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+
+      redis:
+        image: redis:6
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd="redis-cli ping"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        submodules: recursive
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          build-essential cmake \
+          libssl-dev zlib1g-dev \
+          libmysqlclient-dev libhiredis-dev \
+          libargon2-dev \
+          libprotobuf-dev protobuf-compiler \
+          nlohmann-json3-dev
+
+    - name: Initialize databases
+      run: |
+        mysql -h 127.0.0.1 -u root muduo_im_test < sql/init.sql
+        mysql -h 127.0.0.1 -u root -e "CREATE DATABASE muduo_im DEFAULT CHARACTER SET utf8mb4"
+        mysql -h 127.0.0.1 -u root muduo_im < sql/init.sql
+
+    - name: Build muduo-im
+      run: |
+        mkdir -p build && cd build
+        cmake .. -DCMAKE_BUILD_TYPE=Release
+        make -j$(nproc)
+
+    - name: Run unit tests
+      run: |
+        cd build
+        ./test_user_service
+        ./test_friend_service
+        ./test_group_service
+        ./test_message_service
+
+    - name: Run mymuduo-http tests
+      run: |
+        cd third_party/mymuduo-http
+        mkdir -p build && cd build
+        cmake .. -DCMAKE_BUILD_TYPE=Release
+        make -j$(nproc)
+        ./test_http
+        ./test_gzip
+        ./test_rate_limiter
+        ./test_websocket_server
+        ./test_circuit_breaker
+        ./test_object_pool

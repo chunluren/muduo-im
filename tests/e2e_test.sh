@@ -24,28 +24,28 @@ echo "========================================"
 echo ""
 echo "--- 1. 注册用户 ---"
 R1=$(curl -s -X POST $API/api/register -H "Content-Type: application/json" \
-    -d '{"username":"testuser1","password":"pass123","nickname":"Test1"}')
+    -d '{"username":"testuser1","password":"pass1234","nickname":"Test1"}')
 check "注册 user1" "success" "$R1"
 
 R2=$(curl -s -X POST $API/api/register -H "Content-Type: application/json" \
-    -d '{"username":"testuser2","password":"pass456","nickname":"Test2"}')
+    -d '{"username":"testuser2","password":"pass4567","nickname":"Test2"}')
 check "注册 user2" "success" "$R2"
 
 # 重复注册应该失败
 R3=$(curl -s -X POST $API/api/register -H "Content-Type: application/json" \
-    -d '{"username":"testuser1","password":"pass123","nickname":"Test1"}')
+    -d '{"username":"testuser1","password":"pass1234","nickname":"Test1"}')
 check "重复注册拒绝" "already exists" "$R3"
 
 echo ""
 echo "--- 2. 登录 ---"
 L1=$(curl -s -X POST $API/api/login -H "Content-Type: application/json" \
-    -d '{"username":"testuser1","password":"pass123"}')
+    -d '{"username":"testuser1","password":"pass1234"}')
 check "登录 user1" "token" "$L1"
 TOKEN1=$(echo "$L1" | python3 -c "import sys,json; print(json.load(sys.stdin).get('token',''))" 2>/dev/null)
 USERID1=$(echo "$L1" | python3 -c "import sys,json; print(json.load(sys.stdin).get('userId',''))" 2>/dev/null)
 
 L2=$(curl -s -X POST $API/api/login -H "Content-Type: application/json" \
-    -d '{"username":"testuser2","password":"pass456"}')
+    -d '{"username":"testuser2","password":"pass4567"}')
 check "登录 user2" "token" "$L2"
 TOKEN2=$(echo "$L2" | python3 -c "import sys,json; print(json.load(sys.stdin).get('token',''))" 2>/dev/null)
 USERID2=$(echo "$L2" | python3 -c "import sys,json; print(json.load(sys.stdin).get('userId',''))" 2>/dev/null)
@@ -135,19 +135,19 @@ check "退出群组" "success" "$GL"
 echo ""
 echo "--- 10. 修改密码 ---"
 PW=$(curl -s -X POST $API/api/user/password -H "$AUTH1" -H "Content-Type: application/json" \
-    -d '{"oldPassword":"pass123","newPassword":"newpass123"}')
+    -d '{"oldPassword":"pass1234","newPassword":"newpass1234"}')
 check "修改密码" "success" "$PW"
 
 # 用新密码重新登录
 L4=$(curl -s -X POST $API/api/login -H "Content-Type: application/json" \
-    -d '{"username":"testuser1","password":"newpass123"}')
+    -d '{"username":"testuser1","password":"newpass1234"}')
 check "新密码登录" "token" "$L4"
 
 # 改回去
 curl -s -X POST $API/api/user/password \
     -H "Authorization: Bearer $(echo "$L4" | python3 -c "import sys,json; print(json.load(sys.stdin).get('token',''))" 2>/dev/null)" \
     -H "Content-Type: application/json" \
-    -d '{"oldPassword":"newpass123","newPassword":"pass123"}' > /dev/null 2>&1
+    -d '{"oldPassword":"newpass1234","newPassword":"pass1234"}' > /dev/null 2>&1
 
 echo ""
 echo "========================================"

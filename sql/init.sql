@@ -78,3 +78,17 @@ CREATE TABLE IF NOT EXISTS friend_requests (
     FOREIGN KEY (from_user) REFERENCES users(id) ON DELETE CASCADE,
     FOREIGN KEY (to_user) REFERENCES users(id) ON DELETE CASCADE
 ) ENGINE=InnoDB;
+
+-- 审计日志：记录敏感操作（登录/注册/改密/注销/踢人等）
+-- 不加外键：用户注销后仍保留审计痕迹
+CREATE TABLE IF NOT EXISTS audit_log (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    user_id BIGINT,
+    action VARCHAR(64) NOT NULL COMMENT 'login/register/delete_account/change_password/...',
+    target VARCHAR(128) COMMENT '操作目标（user_id/group_id/...）',
+    ip VARCHAR(64),
+    detail TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_user_time (user_id, created_at),
+    INDEX idx_action_time (action, created_at)
+) ENGINE=InnoDB;

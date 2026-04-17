@@ -9,8 +9,10 @@
 
 #include "server/ChatServer.h"
 #include "common/Config.h"
+#include "common/Logging.h"
 #include "net/EventLoop.h"
 #include "asynclogger/AsyncLogger.h"
+#include <cstdlib>
 #include <iostream>
 #include <signal.h>
 
@@ -90,7 +92,20 @@ int main(int argc, char* argv[]) {
 
     uint16_t httpPort = config.getInt("server.http_port", 8080);
     uint16_t wsPort = config.getInt("server.ws_port", 9090);
-    std::string jwtSecret = config.get("server.jwt_secret", "muduo-im-jwt-secret-key");
+
+    // JWT 密钥：优先级 ENV > config > 兜底默认值
+    // 生产环境请务必通过 MUDUO_IM_JWT_SECRET 环境变量注入强随机密钥
+    std::string jwtSecret;
+    const char* envSecret = std::getenv("MUDUO_IM_JWT_SECRET");
+    if (envSecret && *envSecret) {
+        jwtSecret = envSecret;
+    } else {
+        jwtSecret = config.get("server.jwt_secret", "");
+        if (jwtSecret.empty() || jwtSecret == "muduo-im-jwt-secret-key") {
+            std::cerr << "WARNING: using default JWT secret — set MUDUO_IM_JWT_SECRET env var for production" << std::endl;
+            jwtSecret = "muduo-im-jwt-secret-key-DO-NOT-USE-IN-PRODUCTION";
+        }
+    }
 
     // ---- 创建事件循环 ----
     EventLoop loop;
@@ -108,10 +123,16 @@ int main(int argc, char* argv[]) {
 
     LOG_INFO("muduo-im started: http=%u ws=%u config=%s",
              (unsigned)httpPort, (unsigned)wsPort, configFile.c_str());
+    // 同步输出一条结构化事件日志，方便日志平台聚合启动事件
+    LOG_EVENT("server_start",
+              "http=" + std::to_string(httpPort) +
+              " ws="  + std::to_string(wsPort)   +
+              " config=" + configFile);
 
     loop.loop();
 
     LOG_INFO("muduo-im shutting down");
+    LOG_EVENT("server_stop", "");
     AsyncLogger::instance().stop();
 
     std::cout << "Server stopped." << std::endl;

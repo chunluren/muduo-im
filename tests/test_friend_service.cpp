@@ -10,8 +10,8 @@ struct UserPair {
 
 UserPair createUsers() {
     UserService usvc(getTestDb(), "secret");
-    auto a = usvc.registerUser("alice_fs", "p", "");
-    auto b = usvc.registerUser("bob_fs", "p", "");
+    auto a = usvc.registerUser("alice_fs", "pass1234", "");
+    auto b = usvc.registerUser("bob_fs", "pass1234", "");
     return {a["userId"].get<int64_t>(), b["userId"].get<int64_t>()};
 }
 
