@@ -229,3 +229,41 @@ websocat ws://localhost:9090/ws?token=<TOKEN>
 ## 前端访问
 
 启动服务后打开浏览器访问 `http://localhost:8080`，即可使用内置的聊天界面进行注册、登录和聊天。
+
+## 生产运维
+
+### 优雅关闭
+
+服务接收 SIGTERM/SIGINT 时会：
+1. 立即刷写 Redis 消息队列到 MySQL（最后机会持久化）
+2. 关闭 HTTP/WebSocket 服务器（拒绝新连接，等待当前请求完成 2s）
+3. 退出事件循环
+
+systemd 配置示例：
+```ini
+[Service]
+ExecStart=/path/to/muduo-im /path/to/config.ini
+ExecStop=/bin/kill -TERM $MAINPID
+TimeoutStopSec=10
+KillMode=mixed
+```
+
+### Kubernetes 健康探针
+
+```yaml
+livenessProbe:
+  httpGet:
+    path: /health
+    port: 8080
+  initialDelaySeconds: 5
+  periodSeconds: 10
+
+readinessProbe:
+  httpGet:
+    path: /health
+    port: 8080
+  initialDelaySeconds: 2
+  periodSeconds: 5
+```
+
+`/health` 返回 503 时 K8s 会停止流量；返回 200 时恢复流量。

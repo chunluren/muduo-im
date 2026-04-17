@@ -1,5 +1,17 @@
 # muduo-im 数据库设计
 
+## 测试数据库
+
+单元测试使用独立的 `muduo_im_test` 数据库，避免污染开发数据。
+
+初始化：
+```bash
+sudo mysql -e "CREATE DATABASE IF NOT EXISTS muduo_im_test DEFAULT CHARACTER SET utf8mb4;"
+sudo mysql muduo_im_test < sql/init.sql
+```
+
+每个测试用例开始时调用 `cleanTestDb()`（在 `tests/test_helper.h`）TRUNCATE 所有表。
+
 ## ER 图
 
 ```

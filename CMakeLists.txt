@@ -53,3 +53,21 @@ target_link_libraries(muduo-im
 # WebSocket benchmark client
 add_executable(ws_bench benchmark/ws_bench.cpp)
 target_link_libraries(ws_bench pthread)
+
+# 测试
+enable_testing()
+file(GLOB TEST_SOURCES tests/*.cpp)
+foreach(TEST_FILE ${TEST_SOURCES})
+    get_filename_component(TEST_NAME ${TEST_FILE} NAME_WE)
+    add_executable(${TEST_NAME} ${TEST_FILE})
+    target_link_libraries(${TEST_NAME}
+        mymuduo
+        nlohmann_json::nlohmann_json
+        OpenSSL::SSL OpenSSL::Crypto
+        ZLIB::ZLIB
+        ${MYSQL_LIBRARY}
+        ${REDIS_LIBRARY}
+        pthread
+    )
+    add_test(NAME ${TEST_NAME} COMMAND ${TEST_NAME})
+endforeach()

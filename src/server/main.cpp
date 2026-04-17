@@ -14,19 +14,28 @@
 #include <iostream>
 #include <signal.h>
 
-/// 全局 EventLoop 指针，供信号处理函数访问以触发退出
+/// 全局 ChatServer 指针，供信号处理函数触发优雅关闭（刷队列 + 关闭服务器）
+ChatServer* g_server = nullptr;
+/// 全局 EventLoop 指针，兜底退出路径
 EventLoop* g_loop = nullptr;
 
 /**
  * @brief 信号处理函数，实现优雅退出
  *
- * 捕获 SIGINT（Ctrl+C）和 SIGTERM（kill 命令）信号，
- * 调用 EventLoop::quit() 使事件循环安全退出，而非直接终止进程。
+ * 捕获 SIGINT（Ctrl+C）和 SIGTERM（kill 命令）信号。
+ * 优先调用 ChatServer::shutdown() 以便刷写 Redis 消息队列、
+ * 向 WebSocket 客户端发送 Close 帧，再退出事件循环；
+ * 若 ChatServer 尚未初始化，退回到 EventLoop::quit()。
  *
- * @param 信号编号（未使用）
+ * @param sig 信号编号
  */
-void signalHandler(int) {
-    if (g_loop) g_loop->quit();
+void signalHandler(int sig) {
+    LOG_INFO("Received signal %d, shutting down gracefully...", sig);
+    if (g_server) {
+        g_server->shutdown();  // graceful: flush queue + close servers
+    } else if (g_loop) {
+        g_loop->quit();  // fallback
+    }
 }
 
 /**
@@ -89,6 +98,7 @@ int main(int argc, char* argv[]) {
 
     // ---- 创建并启动 ChatServer ----
     ChatServer server(&loop, httpPort, wsPort, mysqlConfig, redisConfig, jwtSecret);
+    g_server = &server;  // 注册给信号处理函数，用于优雅关闭
     server.start();
 
     std::cout << "=== muduo-im ===" << std::endl;

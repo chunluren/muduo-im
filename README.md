@@ -34,6 +34,11 @@
 - 外键约束 + 级联删除
 - Redis AOF 持久化（文档：docs/REDIS_CONFIG.md）
 - TransactionGuard RAII 事务守卫
+- `/health` 健康检查端点
+- `/metrics` Prometheus 监控指标
+- WebSocket 心跳保活（30s ping，60s 空闲断开）
+- 优雅关闭（SIGTERM 刷队列后退出）
+- 单条消息隔离（消息队列刷写时单条失败不影响批次）
 
 ## 技术栈
 
@@ -69,6 +74,13 @@ muduo-im/
 │   └── init.sql               # 建表脚本
 ├── benchmark/
 │   └── ws_bench.cpp           # C++ WebSocket 压测客户端
+├── tests/
+│   ├── e2e_test.sh             # 端到端集成测试
+│   ├── test_helper.h           # 单元测试共享 MySQL 固件
+│   ├── test_user_service.cpp   # UserService 单元测试
+│   ├── test_friend_service.cpp # FriendService 单元测试
+│   ├── test_group_service.cpp  # GroupService 单元测试
+│   └── test_message_service.cpp # MessageService 单元测试
 ├── config.ini                 # 运行时配置文件（MySQL/Redis/JWT 等）
 └── CMakeLists.txt
 ```
@@ -194,3 +206,12 @@ python3 benchmark/ws_benchmark.py 10 100   # 10客户端 × 100消息
 ```bash
 cd build && ./ws_bench [并发数] [每客户端消息数]
 ```
+
+### 单元测试
+
+cd build && make test_user_service test_friend_service test_group_service test_message_service
+./test_user_service && ./test_friend_service && ./test_group_service && ./test_message_service
+
+需要先创建测试数据库:
+sudo mysql -e "CREATE DATABASE IF NOT EXISTS muduo_im_test DEFAULT CHARACTER SET utf8mb4;"
+sudo mysql muduo_im_test < sql/init.sql

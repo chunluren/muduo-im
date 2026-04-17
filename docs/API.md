@@ -510,3 +510,31 @@ ws://localhost:9090/ws?token=<JWT_TOKEN>
 ```json
 {"success": false, "message": "peerId required"}
 ```
+
+---
+
+### GET /health
+健康检查（无需鉴权，部署探针用）
+
+**Response 200 OK 或 503 Service Unavailable:**
+```json
+{
+  "status": "ok|degraded",
+  "mysql": "ok|down",
+  "redis": "ok|down",
+  "online_users": 42,
+  "mysql_breaker": "closed|open|half-open",
+  "redis_breaker": "closed|open|half-open"
+}
+```
+
+### GET /metrics
+Prometheus 监控指标（无需鉴权）
+
+返回 Prometheus 文本格式：
+```
+# TYPE http_requests_total counter
+http_requests_total 1234
+http_requests_get 800
+http_requests_post 434
+```

@@ -106,6 +106,7 @@ public:
     void start() {
         httpServer_.enableCors();
         httpServer_.useRateLimit(100); // 100 req/sec per IP
+        httpServer_.enableMetrics();  // 暴露 GET /metrics
         httpServer_.start();
         wsServer_.start();
 
@@ -121,8 +122,24 @@ public:
         });
     }
 
+    /// 优雅关闭 — 刷队列 + 断开连接 + 退出循环
+    void shutdown() {
+        // 1. 立即刷一次消息队列（最后机会持久化未刷的消息）
+        flushMessageQueue();
+
+        // 2. 通知所有 WS 客户端断开（可选，让客户端走 close 流程）
+        // wsServer_ 内部 shutdown 会处理
+
+        // 3. 关闭 HTTP/WS 服务器
+        httpServer_.shutdown(2.0);
+        wsServer_.shutdown(2.0);
+
+        // 4. 退出 EventLoop
+        loop_->quit();
+    }
+
 private:
-    // ==================== Auth Helper ====================
+    // ==================== Auth / Request Helpers ====================
 
     /**
      * @brief 从 HTTP 请求的 Authorization 头中提取并验证 JWT Token
@@ -139,448 +156,452 @@ private:
         return userService_.verifyToken(token);
     }
 
-    // ==================== HTTP REST API ====================
+    /// 鉴权辅助：失败时设置 401 响应并返回 -1
+    /// 用法: int64_t userId = requireAuth(req, resp); if (userId < 0) return;
+    int64_t requireAuth(const HttpRequest& req, HttpResponse& resp) {
+        int64_t userId = authFromRequest(req);
+        if (userId < 0) {
+            resp.setStatusCode(HttpStatusCode::UNAUTHORIZED);
+            resp.setText("unauthorized");
+        }
+        return userId;
+    }
+
+    /// 解析请求体 JSON，失败时设置 400 响应并返回 false
+    /// 用法: json j; if (!parseJsonBody(req, resp, j)) return;
+    static bool parseJsonBody(const HttpRequest& req, HttpResponse& resp, json& out) {
+        out = json::parse(req.body, nullptr, false);
+        if (out.is_discarded()) {
+            resp = HttpResponse::badRequest("invalid JSON");
+            return false;
+        }
+        return true;
+    }
+
+    // ==================== HTTP Route Table ====================
 
     void setupHttpRoutes() {
         // 静态文件服务（前端）
         httpServer_.serveStatic("/", "../web");
 
-        // POST /api/register
-        httpServer_.POST("/api/register", [this](const HttpRequest& req, HttpResponse& resp) {
-            auto j = json::parse(req.body, nullptr, false);
-            if (j.is_discarded()) {
-                resp = HttpResponse::badRequest("invalid JSON");
-                return;
-            }
-            std::string username = j.value("username", "");
-            std::string password = j.value("password", "");
-            std::string nickname = j.value("nickname", "");
-            json result = userService_.registerUser(username, password, nickname);
-            resp.setJson(result.dump());
-        });
+        // ---- Auth ----
+        httpServer_.POST("/api/register", [this](const HttpRequest& req, HttpResponse& resp) { handleRegister(req, resp); });
+        httpServer_.POST("/api/login",    [this](const HttpRequest& req, HttpResponse& resp) { handleLogin(req, resp); });
 
-        // POST /api/login
-        httpServer_.POST("/api/login", [this](const HttpRequest& req, HttpResponse& resp) {
-            auto j = json::parse(req.body, nullptr, false);
-            if (j.is_discarded()) {
-                resp = HttpResponse::badRequest("invalid JSON");
-                return;
-            }
-            std::string username = j.value("username", "");
-            std::string password = j.value("password", "");
-            json result = userService_.login(username, password);
-            resp.setJson(result.dump());
-        });
+        // ---- Friends ----
+        httpServer_.GET ("/api/friends",          [this](const HttpRequest& req, HttpResponse& resp) { handleGetFriends(req, resp); });
+        httpServer_.POST("/api/friends/add",      [this](const HttpRequest& req, HttpResponse& resp) { handleAddFriend(req, resp); });
+        httpServer_.POST("/api/friends/delete",   [this](const HttpRequest& req, HttpResponse& resp) { handleDeleteFriend(req, resp); });
+        httpServer_.POST("/api/friends/request",  [this](const HttpRequest& req, HttpResponse& resp) { handleFriendRequest(req, resp); });
+        httpServer_.GET ("/api/friends/requests", [this](const HttpRequest& req, HttpResponse& resp) { handleGetFriendRequests(req, resp); });
+        httpServer_.POST("/api/friends/handle",   [this](const HttpRequest& req, HttpResponse& resp) { handleFriendRequestResponse(req, resp); });
 
-        // GET /api/friends
-        httpServer_.GET("/api/friends", [this](const HttpRequest& req, HttpResponse& resp) {
-            int64_t userId = authFromRequest(req);
-            if (userId < 0) {
-                resp.setStatusCode(HttpStatusCode::UNAUTHORIZED);
-                resp.setText("unauthorized");
-                return;
-            }
-            json result = friendService_.getFriends(userId);
-            resp.setJson(result.dump());
-        });
+        // ---- Groups ----
+        httpServer_.GET ("/api/groups",              [this](const HttpRequest& req, HttpResponse& resp) { handleGetGroups(req, resp); });
+        httpServer_.POST("/api/groups/create",       [this](const HttpRequest& req, HttpResponse& resp) { handleCreateGroup(req, resp); });
+        httpServer_.POST("/api/groups/join",         [this](const HttpRequest& req, HttpResponse& resp) { handleJoinGroup(req, resp); });
+        httpServer_.GET ("/api/groups/members",      [this](const HttpRequest& req, HttpResponse& resp) { handleGetGroupMembers(req, resp); });
+        httpServer_.POST("/api/groups/leave",        [this](const HttpRequest& req, HttpResponse& resp) { handleLeaveGroup(req, resp); });
+        httpServer_.POST("/api/groups/delete",       [this](const HttpRequest& req, HttpResponse& resp) { handleDeleteGroup(req, resp); });
+        httpServer_.POST("/api/groups/announcement", [this](const HttpRequest& req, HttpResponse& resp) { handleSetGroupAnnouncement(req, resp); });
+        httpServer_.GET ("/api/groups/announcement", [this](const HttpRequest& req, HttpResponse& resp) { handleGetGroupAnnouncement(req, resp); });
+        httpServer_.POST("/api/groups/kick",         [this](const HttpRequest& req, HttpResponse& resp) { handleKickGroupMember(req, resp); });
 
-        // POST /api/friends/add
-        httpServer_.POST("/api/friends/add", [this](const HttpRequest& req, HttpResponse& resp) {
-            int64_t userId = authFromRequest(req);
-            if (userId < 0) {
-                resp.setStatusCode(HttpStatusCode::UNAUTHORIZED);
-                resp.setText("unauthorized");
-                return;
-            }
-            auto j = json::parse(req.body, nullptr, false);
-            if (j.is_discarded()) {
-                resp = HttpResponse::badRequest("invalid JSON");
-                return;
-            }
-            int64_t friendId = j.value("friendId", (int64_t)0);
-            json result = friendService_.addFriend(userId, friendId);
-            resp.setJson(result.dump());
-        });
+        // ---- Messages ----
+        httpServer_.GET ("/api/messages/history",     [this](const HttpRequest& req, HttpResponse& resp) { handleGetMessageHistory(req, resp); });
+        httpServer_.GET ("/api/messages/search",      [this](const HttpRequest& req, HttpResponse& resp) { handleSearchMessages(req, resp); });
+        httpServer_.GET ("/api/messages/read-status", [this](const HttpRequest& req, HttpResponse& resp) { handleGetReadStatus(req, resp); });
+        httpServer_.GET ("/api/unread",               [this](const HttpRequest& req, HttpResponse& resp) { handleGetUnread(req, resp); });
 
-        // POST /api/friends/delete
-        httpServer_.POST("/api/friends/delete", [this](const HttpRequest& req, HttpResponse& resp) {
-            int64_t userId = authFromRequest(req);
-            if (userId < 0) {
-                resp.setStatusCode(HttpStatusCode::UNAUTHORIZED);
-                resp.setText("unauthorized");
-                return;
-            }
-            auto j = json::parse(req.body, nullptr, false);
-            if (j.is_discarded()) {
-                resp = HttpResponse::badRequest("invalid JSON");
-                return;
-            }
-            int64_t friendId = j.value("friendId", (int64_t)0);
-            json result = friendService_.deleteFriend(userId, friendId);
-            resp.setJson(result.dump());
-        });
+        // ---- User ----
+        httpServer_.GET ("/api/user/profile",  [this](const HttpRequest& req, HttpResponse& resp) { handleGetUserProfile(req, resp); });
+        httpServer_.PUT ("/api/user/profile",  [this](const HttpRequest& req, HttpResponse& resp) { handleUpdateProfile(req, resp); });
+        httpServer_.GET ("/api/user/search",   [this](const HttpRequest& req, HttpResponse& resp) { handleSearchUsers(req, resp); });
+        httpServer_.GET ("/api/user/info",     [this](const HttpRequest& req, HttpResponse& resp) { handleGetUserInfo(req, resp); });
+        httpServer_.POST("/api/user/password", [this](const HttpRequest& req, HttpResponse& resp) { handleChangePassword(req, resp); });
+        httpServer_.POST("/api/user/delete",   [this](const HttpRequest& req, HttpResponse& resp) { handleDeleteAccount(req, resp); });
 
-        // GET /api/groups
-        httpServer_.GET("/api/groups", [this](const HttpRequest& req, HttpResponse& resp) {
-            int64_t userId = authFromRequest(req);
-            if (userId < 0) {
-                resp.setStatusCode(HttpStatusCode::UNAUTHORIZED);
-                resp.setText("unauthorized");
-                return;
-            }
-            json result = groupService_.getUserGroups(userId);
-            resp.setJson(result.dump());
-        });
-
-        // POST /api/groups/create
-        httpServer_.POST("/api/groups/create", [this](const HttpRequest& req, HttpResponse& resp) {
-            int64_t userId = authFromRequest(req);
-            if (userId < 0) {
-                resp.setStatusCode(HttpStatusCode::UNAUTHORIZED);
-                resp.setText("unauthorized");
-                return;
-            }
-            auto j = json::parse(req.body, nullptr, false);
-            if (j.is_discarded()) {
-                resp = HttpResponse::badRequest("invalid JSON");
-                return;
-            }
-            std::string name = j.value("name", "");
-            json result = groupService_.createGroup(userId, name);
-            resp.setJson(result.dump());
-        });
-
-        // POST /api/groups/join
-        httpServer_.POST("/api/groups/join", [this](const HttpRequest& req, HttpResponse& resp) {
-            int64_t userId = authFromRequest(req);
-            if (userId < 0) {
-                resp.setStatusCode(HttpStatusCode::UNAUTHORIZED);
-                resp.setText("unauthorized");
-                return;
-            }
-            auto j = json::parse(req.body, nullptr, false);
-            if (j.is_discarded()) {
-                resp = HttpResponse::badRequest("invalid JSON");
-                return;
-            }
-            int64_t groupId = j.value("groupId", (int64_t)0);
-            json result = groupService_.joinGroup(userId, groupId);
-            resp.setJson(result.dump());
-        });
-
-        // GET /api/groups/members
-        httpServer_.GET("/api/groups/members", [this](const HttpRequest& req, HttpResponse& resp) {
-            int64_t userId = authFromRequest(req);
-            if (userId < 0) {
-                resp.setStatusCode(HttpStatusCode::UNAUTHORIZED);
-                resp.setText("unauthorized");
-                return;
-            }
-            std::string groupIdStr = req.getParam("groupId", "0");
-            int64_t groupId = 0;
-            try { groupId = std::stoll(groupIdStr); } catch (...) {}
-            json result = groupService_.getMembers(groupId);
-            resp.setJson(result.dump());
-        });
-
-        // GET /api/messages/history
-        httpServer_.GET("/api/messages/history", [this](const HttpRequest& req, HttpResponse& resp) {
-            int64_t userId = authFromRequest(req);
-            if (userId < 0) {
-                resp.setStatusCode(HttpStatusCode::UNAUTHORIZED);
-                resp.setText("unauthorized");
-                return;
-            }
-
-            std::string peerIdStr = req.getParam("peerId", "0");
-            std::string groupIdStr = req.getParam("groupId", "0");
-            std::string beforeStr = req.getParam("before", "0");
-            int64_t peerId = 0, groupId = 0, before = 0;
-            try { peerId = std::stoll(peerIdStr); } catch (...) {}
-            try { groupId = std::stoll(groupIdStr); } catch (...) {}
-            try { before = std::stoll(beforeStr); } catch (...) {}
-
-            json result;
-            if (groupId > 0) {
-                result = messageService_.getGroupHistory(groupId, 50, before);
-            } else {
-                result = messageService_.getPrivateHistory(userId, peerId, 50, before);
-            }
-            resp.setJson(result.dump());
-        });
-
-        // GET /api/unread -- get unread counts for all friends
-        httpServer_.GET("/api/unread", [this](const HttpRequest& req, HttpResponse& resp) {
-            int64_t userId = authFromRequest(req);
-            if (userId < 0) {
-                resp.setStatusCode(HttpStatusCode::UNAUTHORIZED);
-                resp.setText("unauthorized");
-                return;
-            }
-            // Get unread counts for all friends
-            auto friends = friendService_.getFriends(userId);
-            json result = json::object();
-            for (auto& f : friends) {
-                int64_t fid = f.value("userId", (int64_t)0);
-                int64_t count = getUnread(userId, fid);
-                if (count > 0) {
-                    result[std::to_string(fid)] = count;
-                }
-            }
-            resp.setJson(result.dump());
-        });
-
-        // GET /api/user/profile — 获取自己的资料
-        httpServer_.GET("/api/user/profile", [this](const HttpRequest& req, HttpResponse& resp) {
-            int64_t userId = authFromRequest(req);
-            if (userId < 0) { resp.setStatusCode(HttpStatusCode::UNAUTHORIZED); resp.setText("unauthorized"); return; }
-            resp.setJson(userService_.getProfile(userId).dump());
-        });
-
-        // PUT /api/user/profile — 修改资料
-        httpServer_.PUT("/api/user/profile", [this](const HttpRequest& req, HttpResponse& resp) {
-            int64_t userId = authFromRequest(req);
-            if (userId < 0) { resp.setStatusCode(HttpStatusCode::UNAUTHORIZED); resp.setText("unauthorized"); return; }
-            auto j = json::parse(req.body, nullptr, false);
-            if (j.is_discarded()) { resp = HttpResponse::badRequest("invalid JSON"); return; }
-            resp.setJson(userService_.updateProfile(userId, j.value("nickname", ""), j.value("avatar", "")).dump());
-        });
-
-        // GET /api/user/search?keyword=xxx — 搜索用户
-        httpServer_.GET("/api/user/search", [this](const HttpRequest& req, HttpResponse& resp) {
-            int64_t userId = authFromRequest(req);
-            if (userId < 0) { resp.setStatusCode(HttpStatusCode::UNAUTHORIZED); resp.setText("unauthorized"); return; }
-            std::string keyword = req.getParam("keyword", "");
-            resp.setJson(userService_.searchUsers(keyword).dump());
-        });
-
-        // POST /api/friends/request — 发送好友申请
-        httpServer_.POST("/api/friends/request", [this](const HttpRequest& req, HttpResponse& resp) {
-            int64_t userId = authFromRequest(req);
-            if (userId < 0) { resp.setStatusCode(HttpStatusCode::UNAUTHORIZED); resp.setText("unauthorized"); return; }
-            auto j = json::parse(req.body, nullptr, false);
-            if (j.is_discarded()) { resp = HttpResponse::badRequest("invalid JSON"); return; }
-            int64_t toUserId = j.value("toUserId", (int64_t)0);
-            auto result = friendService_.sendRequest(userId, toUserId);
-            resp.setJson(result.dump());
-
-            // 实时通知对方有新好友申请
-            auto session = onlineManager_.getSession(toUserId);
-            if (session) {
-                session->sendText(json({{"type", "friend_request"}, {"from", std::to_string(userId)}}).dump());
-            }
-        });
-
-        // GET /api/friends/requests — 获取收到的好友申请
-        httpServer_.GET("/api/friends/requests", [this](const HttpRequest& req, HttpResponse& resp) {
-            int64_t userId = authFromRequest(req);
-            if (userId < 0) { resp.setStatusCode(HttpStatusCode::UNAUTHORIZED); resp.setText("unauthorized"); return; }
-            resp.setJson(friendService_.getRequests(userId).dump());
-        });
-
-        // POST /api/friends/handle — 处理好友申请（同意/拒绝）
-        httpServer_.POST("/api/friends/handle", [this](const HttpRequest& req, HttpResponse& resp) {
-            int64_t userId = authFromRequest(req);
-            if (userId < 0) { resp.setStatusCode(HttpStatusCode::UNAUTHORIZED); resp.setText("unauthorized"); return; }
-            auto j = json::parse(req.body, nullptr, false);
-            if (j.is_discarded()) { resp = HttpResponse::badRequest("invalid JSON"); return; }
-            int64_t requestId = j.value("requestId", (int64_t)0);
-            bool accept = j.value("accept", false);
-            auto result = friendService_.handleRequest(userId, requestId, accept);
-            resp.setJson(result.dump());
-        });
-
-        // POST /api/upload -- file upload
-        httpServer_.POST("/api/upload", [this](const HttpRequest& req, HttpResponse& resp) {
-            int64_t userId = authFromRequest(req);
-            if (userId < 0) {
-                resp.setStatusCode(HttpStatusCode::UNAUTHORIZED);
-                resp.setText("unauthorized");
-                return;
-            }
-
-            // Parse multipart
-            std::string contentType = req.getHeader("content-type");
-            std::string boundary = MultipartParser::extractBoundary(contentType);
-            if (boundary.empty()) {
-                resp = HttpResponse::badRequest("missing boundary");
-                return;
-            }
-
-            auto parts = MultipartParser::parse(req.body, boundary);
-            if (parts.empty()) {
-                resp = HttpResponse::badRequest("no file uploaded");
-                return;
-            }
-
-            // Find file part
-            for (auto& part : parts) {
-                if (part.isFile() && !part.data.empty()) {
-                    // Ensure uploads directory exists
-                    ::mkdir("../uploads", 0755);
-
-                    // File size limit: 50MB
-                    if (part.data.size() > 50 * 1024 * 1024) {
-                        resp = HttpResponse::badRequest("file too large (max 50MB)");
-                        return;
-                    }
-
-                    // Generate unique filename
-                    std::string ext = "";
-                    auto dotPos = part.filename.rfind('.');
-                    if (dotPos != std::string::npos) ext = part.filename.substr(dotPos);
-
-                    // File type validation
-                    std::string lowerExt = ext;
-                    std::transform(lowerExt.begin(), lowerExt.end(), lowerExt.begin(), ::tolower);
-                    static const std::vector<std::string> allowedExts = {
-                        ".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp",
-                        ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
-                        ".txt", ".md", ".zip", ".rar", ".7z",
-                        ".mp3", ".mp4", ".wav", ".avi", ".mov"
-                    };
-                    bool allowed = lowerExt.empty(); // no extension is OK
-                    for (auto& ae : allowedExts) {
-                        if (lowerExt == ae) { allowed = true; break; }
-                    }
-                    if (!allowed) {
-                        resp = HttpResponse::badRequest("file type not allowed");
-                        return;
-                    }
-
-                    std::string savedName = Protocol::generateMsgId() + ext;
-                    std::string filepath = "../uploads/" + savedName;
-
-                    // Write file
-                    std::ofstream ofs(filepath, std::ios::binary);
-                    if (!ofs) {
-                        resp = HttpResponse::serverError("failed to save file");
-                        return;
-                    }
-                    ofs.write(part.data.data(), part.data.size());
-                    ofs.close();
-
-                    resp.setJson(json({
-                        {"success", true},
-                        {"url", "/uploads/" + savedName},
-                        {"filename", part.filename},
-                        {"size", part.data.size()}
-                    }).dump());
-                    return;
-                }
-            }
-
-            resp = HttpResponse::badRequest("no file found in upload");
-        });
-
-        // Serve uploaded files
+        // ---- File upload ----
+        httpServer_.POST("/api/upload", [this](const HttpRequest& req, HttpResponse& resp) { handleUpload(req, resp); });
         httpServer_.serveStatic("/uploads", "../uploads");
 
-        // POST /api/groups/leave — 退出群组
-        httpServer_.POST("/api/groups/leave", [this](const HttpRequest& req, HttpResponse& resp) {
-            int64_t userId = authFromRequest(req);
-            if (userId < 0) { resp.setStatusCode(HttpStatusCode::UNAUTHORIZED); resp.setText("unauthorized"); return; }
-            auto j = json::parse(req.body, nullptr, false);
-            if (j.is_discarded()) { resp = HttpResponse::badRequest("invalid JSON"); return; }
-            int64_t groupId = j.value("groupId", (int64_t)0);
-            resp.setJson(groupService_.leaveGroup(userId, groupId).dump());
+        // ---- Health Check ----
+        httpServer_.GET("/health", [this](const HttpRequest& req, HttpResponse& resp) {
+            handleHealth(req, resp);
         });
+    }
 
-        // POST /api/groups/delete — 解散群组（仅群主）
-        httpServer_.POST("/api/groups/delete", [this](const HttpRequest& req, HttpResponse& resp) {
-            int64_t userId = authFromRequest(req);
-            if (userId < 0) { resp.setStatusCode(HttpStatusCode::UNAUTHORIZED); resp.setText("unauthorized"); return; }
-            auto j = json::parse(req.body, nullptr, false);
-            if (j.is_discarded()) { resp = HttpResponse::badRequest("invalid JSON"); return; }
-            int64_t groupId = j.value("groupId", (int64_t)0);
-            resp.setJson(groupService_.deleteGroup(userId, groupId).dump());
-        });
+    // ==================== Route Handlers: Auth ====================
 
-        // GET /api/user/info?userId=NNN — 查看他人资料
-        httpServer_.GET("/api/user/info", [this](const HttpRequest& req, HttpResponse& resp) {
-            int64_t userId = authFromRequest(req);
-            if (userId < 0) { resp.setStatusCode(HttpStatusCode::UNAUTHORIZED); resp.setText("unauthorized"); return; }
-            std::string targetStr = req.getParam("userId", "0");
-            int64_t targetId = 0;
-            try { targetId = std::stoll(targetStr); } catch (...) {}
-            if (targetId <= 0) { resp = HttpResponse::badRequest("invalid userId"); return; }
-            resp.setJson(userService_.getPublicProfile(targetId).dump());
-        });
+    void handleRegister(const HttpRequest& req, HttpResponse& resp) {
+        json j;
+        if (!parseJsonBody(req, resp, j)) return;
+        resp.setJson(userService_.registerUser(
+            j.value("username", ""), j.value("password", ""), j.value("nickname", "")
+        ).dump());
+    }
 
-        // POST /api/user/password — 修改密码
-        httpServer_.POST("/api/user/password", [this](const HttpRequest& req, HttpResponse& resp) {
-            int64_t userId = authFromRequest(req);
-            if (userId < 0) { resp.setStatusCode(HttpStatusCode::UNAUTHORIZED); resp.setText("unauthorized"); return; }
-            auto j = json::parse(req.body, nullptr, false);
-            if (j.is_discarded()) { resp = HttpResponse::badRequest("invalid JSON"); return; }
-            resp.setJson(userService_.changePassword(userId, j.value("oldPassword", ""), j.value("newPassword", "")).dump());
-        });
+    void handleLogin(const HttpRequest& req, HttpResponse& resp) {
+        json j;
+        if (!parseJsonBody(req, resp, j)) return;
+        resp.setJson(userService_.login(
+            j.value("username", ""), j.value("password", "")
+        ).dump());
+    }
 
-        // POST /api/user/delete — 注销账号
-        httpServer_.POST("/api/user/delete", [this](const HttpRequest& req, HttpResponse& resp) {
-            int64_t userId = authFromRequest(req);
-            if (userId < 0) { resp.setStatusCode(HttpStatusCode::UNAUTHORIZED); resp.setText("unauthorized"); return; }
-            auto j = json::parse(req.body, nullptr, false);
-            if (j.is_discarded()) { resp = HttpResponse::badRequest("invalid JSON"); return; }
-            resp.setJson(userService_.deleteAccount(userId, j.value("password", "")).dump());
-        });
+    // ==================== Route Handlers: Friends ====================
 
-        // GET /api/messages/search?keyword=xxx — 搜索消息
-        httpServer_.GET("/api/messages/search", [this](const HttpRequest& req, HttpResponse& resp) {
-            int64_t userId = authFromRequest(req);
-            if (userId < 0) { resp.setStatusCode(HttpStatusCode::UNAUTHORIZED); resp.setText("unauthorized"); return; }
-            std::string keyword = req.getParam("keyword", "");
-            resp.setJson(messageService_.searchMessages(userId, keyword).dump());
-        });
+    void handleGetFriends(const HttpRequest& req, HttpResponse& resp) {
+        int64_t userId = requireAuth(req, resp);
+        if (userId < 0) return;
+        resp.setJson(friendService_.getFriends(userId).dump());
+    }
 
-        // POST /api/groups/announcement — 设置群公告
-        httpServer_.POST("/api/groups/announcement", [this](const HttpRequest& req, HttpResponse& resp) {
-            int64_t userId = authFromRequest(req);
-            if (userId < 0) { resp.setStatusCode(HttpStatusCode::UNAUTHORIZED); resp.setText("unauthorized"); return; }
-            auto j = json::parse(req.body, nullptr, false);
-            if (j.is_discarded()) { resp = HttpResponse::badRequest("invalid JSON"); return; }
-            int64_t groupId = j.value("groupId", (int64_t)0);
-            std::string announcement = j.value("announcement", "");
-            resp.setJson(groupService_.setAnnouncement(userId, groupId, announcement).dump());
-        });
+    void handleAddFriend(const HttpRequest& req, HttpResponse& resp) {
+        int64_t userId = requireAuth(req, resp);
+        if (userId < 0) return;
+        json j;
+        if (!parseJsonBody(req, resp, j)) return;
+        int64_t friendId = j.value("friendId", (int64_t)0);
+        resp.setJson(friendService_.addFriend(userId, friendId).dump());
+    }
 
-        // GET /api/groups/announcement?groupId=NNN — 获取群公告
-        httpServer_.GET("/api/groups/announcement", [this](const HttpRequest& req, HttpResponse& resp) {
-            int64_t userId = authFromRequest(req);
-            if (userId < 0) { resp.setStatusCode(HttpStatusCode::UNAUTHORIZED); resp.setText("unauthorized"); return; }
-            std::string gidStr = req.getParam("groupId", "0");
-            int64_t groupId = 0;
-            try { groupId = std::stoll(gidStr); } catch (...) {}
-            std::string ann = groupService_.getAnnouncement(groupId);
-            resp.setJson(json({{"success", true}, {"announcement", ann}}).dump());
-        });
+    void handleDeleteFriend(const HttpRequest& req, HttpResponse& resp) {
+        int64_t userId = requireAuth(req, resp);
+        if (userId < 0) return;
+        json j;
+        if (!parseJsonBody(req, resp, j)) return;
+        int64_t friendId = j.value("friendId", (int64_t)0);
+        resp.setJson(friendService_.deleteFriend(userId, friendId).dump());
+    }
 
-        // POST /api/groups/kick — 踢出群成员（仅群主）
-        httpServer_.POST("/api/groups/kick", [this](const HttpRequest& req, HttpResponse& resp) {
-            int64_t userId = authFromRequest(req);
-            if (userId < 0) { resp.setStatusCode(HttpStatusCode::UNAUTHORIZED); resp.setText("unauthorized"); return; }
-            auto j = json::parse(req.body, nullptr, false);
-            if (j.is_discarded()) { resp = HttpResponse::badRequest("invalid JSON"); return; }
-            int64_t groupId = j.value("groupId", (int64_t)0);
-            int64_t targetUserId = j.value("userId", (int64_t)0);
-            resp.setJson(groupService_.kickMember(userId, groupId, targetUserId).dump());
-        });
+    void handleFriendRequest(const HttpRequest& req, HttpResponse& resp) {
+        int64_t userId = requireAuth(req, resp);
+        if (userId < 0) return;
+        json j;
+        if (!parseJsonBody(req, resp, j)) return;
+        int64_t toUserId = j.value("toUserId", (int64_t)0);
+        resp.setJson(friendService_.sendRequest(userId, toUserId).dump());
 
-        // GET /api/messages/read-status?peerId=NNN — 获取已读位置
-        httpServer_.GET("/api/messages/read-status", [this](const HttpRequest& req, HttpResponse& resp) {
-            int64_t userId = authFromRequest(req);
-            if (userId < 0) { resp.setStatusCode(HttpStatusCode::UNAUTHORIZED); resp.setText("unauthorized"); return; }
-            std::string peerStr = req.getParam("peerId", "0");
+        // 实时通知对方有新好友申请
+        auto session = onlineManager_.getSession(toUserId);
+        if (session) {
+            session->sendText(json({{"type", "friend_request"}, {"from", std::to_string(userId)}}).dump());
+        }
+    }
 
-            if (!redisPool_) { resp.setJson(json({{"lastReadMsgId", ""}}).dump()); return; }
-            auto conn = redisPool_->acquire(1000);
-            if (!conn || !conn->valid()) { resp.setJson(json({{"lastReadMsgId", ""}}).dump()); return; }
+    void handleGetFriendRequests(const HttpRequest& req, HttpResponse& resp) {
+        int64_t userId = requireAuth(req, resp);
+        if (userId < 0) return;
+        resp.setJson(friendService_.getRequests(userId).dump());
+    }
 
-            // What has the peer read of my messages?
-            std::string lastRead = conn->get("read_pos:" + peerStr + ":" + std::to_string(userId));
-            redisPool_->release(std::move(conn));
-            resp.setJson(json({{"lastReadMsgId", lastRead}}).dump());
-        });
+    void handleFriendRequestResponse(const HttpRequest& req, HttpResponse& resp) {
+        int64_t userId = requireAuth(req, resp);
+        if (userId < 0) return;
+        json j;
+        if (!parseJsonBody(req, resp, j)) return;
+        int64_t requestId = j.value("requestId", (int64_t)0);
+        bool accept = j.value("accept", false);
+        resp.setJson(friendService_.handleRequest(userId, requestId, accept).dump());
+    }
+
+    // ==================== Route Handlers: Groups ====================
+
+    void handleGetGroups(const HttpRequest& req, HttpResponse& resp) {
+        int64_t userId = requireAuth(req, resp);
+        if (userId < 0) return;
+        resp.setJson(groupService_.getUserGroups(userId).dump());
+    }
+
+    void handleCreateGroup(const HttpRequest& req, HttpResponse& resp) {
+        int64_t userId = requireAuth(req, resp);
+        if (userId < 0) return;
+        json j;
+        if (!parseJsonBody(req, resp, j)) return;
+        resp.setJson(groupService_.createGroup(userId, j.value("name", "")).dump());
+    }
+
+    void handleJoinGroup(const HttpRequest& req, HttpResponse& resp) {
+        int64_t userId = requireAuth(req, resp);
+        if (userId < 0) return;
+        json j;
+        if (!parseJsonBody(req, resp, j)) return;
+        int64_t groupId = j.value("groupId", (int64_t)0);
+        resp.setJson(groupService_.joinGroup(userId, groupId).dump());
+    }
+
+    void handleGetGroupMembers(const HttpRequest& req, HttpResponse& resp) {
+        int64_t userId = requireAuth(req, resp);
+        if (userId < 0) return;
+        int64_t groupId = 0;
+        try { groupId = std::stoll(req.getParam("groupId", "0")); } catch (...) {}
+        resp.setJson(groupService_.getMembers(groupId).dump());
+    }
+
+    void handleLeaveGroup(const HttpRequest& req, HttpResponse& resp) {
+        int64_t userId = requireAuth(req, resp);
+        if (userId < 0) return;
+        json j;
+        if (!parseJsonBody(req, resp, j)) return;
+        int64_t groupId = j.value("groupId", (int64_t)0);
+        resp.setJson(groupService_.leaveGroup(userId, groupId).dump());
+    }
+
+    void handleDeleteGroup(const HttpRequest& req, HttpResponse& resp) {
+        int64_t userId = requireAuth(req, resp);
+        if (userId < 0) return;
+        json j;
+        if (!parseJsonBody(req, resp, j)) return;
+        int64_t groupId = j.value("groupId", (int64_t)0);
+        resp.setJson(groupService_.deleteGroup(userId, groupId).dump());
+    }
+
+    void handleSetGroupAnnouncement(const HttpRequest& req, HttpResponse& resp) {
+        int64_t userId = requireAuth(req, resp);
+        if (userId < 0) return;
+        json j;
+        if (!parseJsonBody(req, resp, j)) return;
+        int64_t groupId = j.value("groupId", (int64_t)0);
+        std::string announcement = j.value("announcement", "");
+        resp.setJson(groupService_.setAnnouncement(userId, groupId, announcement).dump());
+    }
+
+    void handleGetGroupAnnouncement(const HttpRequest& req, HttpResponse& resp) {
+        int64_t userId = requireAuth(req, resp);
+        if (userId < 0) return;
+        int64_t groupId = 0;
+        try { groupId = std::stoll(req.getParam("groupId", "0")); } catch (...) {}
+        std::string ann = groupService_.getAnnouncement(groupId);
+        resp.setJson(json({{"success", true}, {"announcement", ann}}).dump());
+    }
+
+    void handleKickGroupMember(const HttpRequest& req, HttpResponse& resp) {
+        int64_t userId = requireAuth(req, resp);
+        if (userId < 0) return;
+        json j;
+        if (!parseJsonBody(req, resp, j)) return;
+        int64_t groupId = j.value("groupId", (int64_t)0);
+        int64_t targetUserId = j.value("userId", (int64_t)0);
+        resp.setJson(groupService_.kickMember(userId, groupId, targetUserId).dump());
+    }
+
+    // ==================== Route Handlers: Messages ====================
+
+    void handleGetMessageHistory(const HttpRequest& req, HttpResponse& resp) {
+        int64_t userId = requireAuth(req, resp);
+        if (userId < 0) return;
+
+        int64_t peerId = 0, groupId = 0, before = 0;
+        try { peerId  = std::stoll(req.getParam("peerId",  "0")); } catch (...) {}
+        try { groupId = std::stoll(req.getParam("groupId", "0")); } catch (...) {}
+        try { before  = std::stoll(req.getParam("before",  "0")); } catch (...) {}
+
+        json result = (groupId > 0)
+            ? messageService_.getGroupHistory(groupId, 50, before)
+            : messageService_.getPrivateHistory(userId, peerId, 50, before);
+        resp.setJson(result.dump());
+    }
+
+    void handleSearchMessages(const HttpRequest& req, HttpResponse& resp) {
+        int64_t userId = requireAuth(req, resp);
+        if (userId < 0) return;
+        resp.setJson(messageService_.searchMessages(userId, req.getParam("keyword", "")).dump());
+    }
+
+    void handleGetReadStatus(const HttpRequest& req, HttpResponse& resp) {
+        int64_t userId = requireAuth(req, resp);
+        if (userId < 0) return;
+        std::string peerStr = req.getParam("peerId", "0");
+
+        if (!redisPool_) { resp.setJson(json({{"lastReadMsgId", ""}}).dump()); return; }
+        auto conn = redisPool_->acquire(1000);
+        if (!conn || !conn->valid()) { resp.setJson(json({{"lastReadMsgId", ""}}).dump()); return; }
+
+        // What has the peer read of my messages?
+        std::string lastRead = conn->get("read_pos:" + peerStr + ":" + std::to_string(userId));
+        redisPool_->release(std::move(conn));
+        resp.setJson(json({{"lastReadMsgId", lastRead}}).dump());
+    }
+
+    void handleGetUnread(const HttpRequest& req, HttpResponse& resp) {
+        int64_t userId = requireAuth(req, resp);
+        if (userId < 0) return;
+        auto friends = friendService_.getFriends(userId);
+        json result = json::object();
+        for (auto& f : friends) {
+            int64_t fid = f.value("userId", (int64_t)0);
+            int64_t count = getUnread(userId, fid);
+            if (count > 0) result[std::to_string(fid)] = count;
+        }
+        resp.setJson(result.dump());
+    }
+
+    // ==================== Route Handlers: User ====================
+
+    void handleGetUserProfile(const HttpRequest& req, HttpResponse& resp) {
+        int64_t userId = requireAuth(req, resp);
+        if (userId < 0) return;
+        resp.setJson(userService_.getProfile(userId).dump());
+    }
+
+    void handleUpdateProfile(const HttpRequest& req, HttpResponse& resp) {
+        int64_t userId = requireAuth(req, resp);
+        if (userId < 0) return;
+        json j;
+        if (!parseJsonBody(req, resp, j)) return;
+        resp.setJson(userService_.updateProfile(
+            userId, j.value("nickname", ""), j.value("avatar", "")
+        ).dump());
+    }
+
+    void handleSearchUsers(const HttpRequest& req, HttpResponse& resp) {
+        int64_t userId = requireAuth(req, resp);
+        if (userId < 0) return;
+        resp.setJson(userService_.searchUsers(req.getParam("keyword", "")).dump());
+    }
+
+    void handleGetUserInfo(const HttpRequest& req, HttpResponse& resp) {
+        int64_t userId = requireAuth(req, resp);
+        if (userId < 0) return;
+        int64_t targetId = 0;
+        try { targetId = std::stoll(req.getParam("userId", "0")); } catch (...) {}
+        if (targetId <= 0) { resp = HttpResponse::badRequest("invalid userId"); return; }
+        resp.setJson(userService_.getPublicProfile(targetId).dump());
+    }
+
+    void handleChangePassword(const HttpRequest& req, HttpResponse& resp) {
+        int64_t userId = requireAuth(req, resp);
+        if (userId < 0) return;
+        json j;
+        if (!parseJsonBody(req, resp, j)) return;
+        resp.setJson(userService_.changePassword(
+            userId, j.value("oldPassword", ""), j.value("newPassword", "")
+        ).dump());
+    }
+
+    void handleDeleteAccount(const HttpRequest& req, HttpResponse& resp) {
+        int64_t userId = requireAuth(req, resp);
+        if (userId < 0) return;
+        json j;
+        if (!parseJsonBody(req, resp, j)) return;
+        resp.setJson(userService_.deleteAccount(userId, j.value("password", "")).dump());
+    }
+
+    // ==================== Route Handlers: Upload ====================
+
+    void handleUpload(const HttpRequest& req, HttpResponse& resp) {
+        int64_t userId = requireAuth(req, resp);
+        if (userId < 0) return;
+        (void)userId;
+
+        // Parse multipart
+        std::string contentType = req.getHeader("content-type");
+        std::string boundary = MultipartParser::extractBoundary(contentType);
+        if (boundary.empty()) {
+            resp = HttpResponse::badRequest("missing boundary");
+            return;
+        }
+
+        auto parts = MultipartParser::parse(req.body, boundary);
+        if (parts.empty()) {
+            resp = HttpResponse::badRequest("no file uploaded");
+            return;
+        }
+
+        // Find file part
+        for (auto& part : parts) {
+            if (part.isFile() && !part.data.empty()) {
+                // Ensure uploads directory exists
+                ::mkdir("../uploads", 0755);
+
+                // File size limit: 50MB
+                if (part.data.size() > 50 * 1024 * 1024) {
+                    resp = HttpResponse::badRequest("file too large (max 50MB)");
+                    return;
+                }
+
+                // Generate unique filename
+                std::string ext = "";
+                auto dotPos = part.filename.rfind('.');
+                if (dotPos != std::string::npos) ext = part.filename.substr(dotPos);
+
+                // File type validation
+                std::string lowerExt = ext;
+                std::transform(lowerExt.begin(), lowerExt.end(), lowerExt.begin(), ::tolower);
+                static const std::vector<std::string> allowedExts = {
+                    ".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp",
+                    ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
+                    ".txt", ".md", ".zip", ".rar", ".7z",
+                    ".mp3", ".mp4", ".wav", ".avi", ".mov"
+                };
+                bool allowed = lowerExt.empty(); // no extension is OK
+                for (auto& ae : allowedExts) {
+                    if (lowerExt == ae) { allowed = true; break; }
+                }
+                if (!allowed) {
+                    resp = HttpResponse::badRequest("file type not allowed");
+                    return;
+                }
+
+                std::string savedName = Protocol::generateMsgId() + ext;
+                std::string filepath = "../uploads/" + savedName;
+
+                // Write file
+                std::ofstream ofs(filepath, std::ios::binary);
+                if (!ofs) {
+                    resp = HttpResponse::serverError("failed to save file");
+                    return;
+                }
+                ofs.write(part.data.data(), part.data.size());
+                ofs.close();
+
+                resp.setJson(json({
+                    {"success", true},
+                    {"url", "/uploads/" + savedName},
+                    {"filename", part.filename},
+                    {"size", part.data.size()}
+                }).dump());
+                return;
+            }
+        }
+
+        resp = HttpResponse::badRequest("no file found in upload");
+    }
+
+    // ==================== Route Handlers: Health ====================
+
+    void handleHealth(const HttpRequest&, HttpResponse& resp) {
+        bool mysqlOk = false;
+        bool redisOk = false;
+
+        // Test MySQL
+        if (auto conn = mysqlPool_->acquire(500)) {
+            mysqlOk = conn->ping();
+            mysqlPool_->release(std::move(conn));
+        }
+
+        // Test Redis
+        if (redisPool_) {
+            if (auto conn = redisPool_->acquire(500)) {
+                redisOk = conn->ping();
+                redisPool_->release(std::move(conn));
+            }
+        }
+
+        json result = {
+            {"status", (mysqlOk && redisOk) ? "ok" : "degraded"},
+            {"mysql", mysqlOk ? "ok" : "down"},
+            {"redis", redisOk ? "ok" : "down"},
+            {"online_users", (int64_t)onlineManager_.getOnlineUsers().size()},
+            {"mysql_breaker", mysqlBreaker_.state() == CircuitBreaker::Closed ? "closed" : (mysqlBreaker_.state() == CircuitBreaker::Open ? "open" : "half-open")},
+            {"redis_breaker", redisBreaker_.state() == CircuitBreaker::Closed ? "closed" : (redisBreaker_.state() == CircuitBreaker::Open ? "open" : "half-open")}
+        };
+
+        if (!mysqlOk || !redisOk) {
+            resp.setStatusCode(HttpStatusCode::SERVICE_UNAVAILABLE);
+        }
+        resp.setJson(result.dump());
     }
 
     // ==================== WebSocket ====================
@@ -604,6 +625,12 @@ private:
     }
 
     void setupWebSocket() {
+        WebSocketConfig wsConfig;
+        wsConfig.idleTimeoutMs = 60000;     // 60s 没消息断开
+        wsConfig.enablePingPong = true;
+        wsConfig.pingIntervalMs = 30000;    // 30s 发一次 ping
+        wsServer_.setConfig(wsConfig);
+
         // Handshake validator: verify token from path
         wsServer_.setHandshakeValidator(
             [this](const TcpConnectionPtr& /*conn*/, const std::string& path,
@@ -1022,35 +1049,39 @@ private:
         conn->ltrim("msg_queue", static_cast<int>(messages.size()), -1);
         redisPool_->release(std::move(conn));
 
-        // Batch insert to MySQL
-        bool allOk = true;
+        // Batch insert to MySQL with per-message isolation:
+        // 一条坏消息不会阻塞整批，熔断器仅在全部失败时才打开
+        int successCount = 0;
+        int failCount = 0;
         for (auto& msgStr : messages) {
             auto j = json::parse(msgStr, nullptr, false);
-            if (j.is_discarded()) continue;
-
+            if (j.is_discarded()) {
+                failCount++;
+                continue;
+            }
+            bool ok = false;
             try {
                 std::string type = j.value("_type", "");
                 if (type == "private") {
-                    messageService_.savePrivateMessage(
+                    ok = messageService_.savePrivateMessage(
                         j.value("msgId", ""), j.value("from", (int64_t)0),
                         j.value("to", (int64_t)0), j.value("content", ""),
                         j.value("timestamp", (int64_t)0));
                 } else if (type == "group") {
-                    messageService_.saveGroupMessage(
+                    ok = messageService_.saveGroupMessage(
                         j.value("msgId", ""), j.value("groupId", (int64_t)0),
                         j.value("from", (int64_t)0), j.value("content", ""),
                         j.value("timestamp", (int64_t)0));
                 }
             } catch (...) {
-                allOk = false;
+                ok = false;
             }
+            if (ok) successCount++;
+            else failCount++;
         }
 
-        if (allOk) {
-            mysqlBreaker_.recordSuccess();
-        } else {
-            mysqlBreaker_.recordFailure();
-        }
+        if (successCount > 0) mysqlBreaker_.recordSuccess();
+        if (failCount > 0 && successCount == 0) mysqlBreaker_.recordFailure();
     }
 
     // ==================== Message Dedup ====================

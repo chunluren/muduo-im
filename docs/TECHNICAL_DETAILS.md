@@ -320,3 +320,65 @@ json handleRequest(int64_t userId, int64_t requestId, bool accept) {
 | UserService | deleteAccount | 4×DELETE（级联清理） |
 
 单条 SQL 操作（如 sendRequest, createGroup）不需要事务。
+
+## ChatServer 路由重构
+
+### 重构前
+
+`setupHttpRoutes()` 内嵌 27 个路由 lambda，每个 lambda 重复 10 行模板代码：
+- 鉴权检查（19 处重复）
+- JSON 解析（15 处重复）
+
+总计 1103 行单文件，难以维护。
+
+### 重构后
+
+1. **抽取助手方法**：
+   - `requireAuth(req, resp)` — 失败设 401 + 返回 -1
+   - `parseJsonBody(req, resp, json& out)` — 失败设 400 + 返回 false
+
+2. **每个路由抽成独立 `handleXxx` 方法**（27 个）
+
+3. **`setupHttpRoutes()` 退化为路由表**（34 行）：
+```cpp
+httpServer_.POST("/api/register", [this](const HttpRequest& req, HttpResponse& resp) {
+    handleRegister(req, resp);
+});
+```
+
+每个 handler 从原来的 ~10 行简化为 4-6 行。
+
+## 生产就绪特性
+
+### /health 探针
+
+```cpp
+void handleHealth(const HttpRequest&, HttpResponse& resp) {
+    bool mysqlOk = mysqlPool_->acquire(500)->ping();  // 简化伪码
+    bool redisOk = redisPool_->acquire(500)->ping();
+    int onlineUsers = onlineManager_.getOnlineUsers().size();
+    auto mysqlState = mysqlBreaker_.state();
+    auto redisState = redisBreaker_.state();
+    if (!mysqlOk || !redisOk) resp.setStatusCode(503);
+    resp.setJson(...);
+}
+```
+
+### 优雅关闭流程
+
+```
+SIGTERM →
+  signalHandler →
+    g_server->shutdown() →
+      1. flushMessageQueue()       ← 持久化未刷消息
+      2. httpServer_.shutdown(2s)  ← 拒绝新请求，等待 in-flight
+      3. wsServer_.shutdown(2s)    ← 关闭所有 WS 连接
+      4. loop_->quit()              ← 退出事件循环
+```
+
+### 单条消息隔离
+
+`flushMessageQueue()` 改进：从原来的 "一条失败整批回滚" 改为单条隔离：
+- successCount++ / failCount++ 各自统计
+- CircuitBreaker 仅当全部失败时才打开（成功一条就重置）
+- 一条坏数据不会阻塞 99 条好数据
