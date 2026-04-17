@@ -76,12 +76,21 @@ public:
         auto conn = db_->acquire(3000);
         if (!conn || !conn->valid()) return {{"success", false}, {"message", "db error"}};
 
-        std::string sql = "INSERT INTO `groups` (name, owner_id) VALUES ('"
-            + conn->escape(name) + "'," + std::to_string(ownerId) + ")";
-        conn->execute(sql);
-        int64_t groupId = conn->lastInsertId();
+        // 使用 PreparedStatement 防 SQL 注入
+        PreparedStatement stmt(conn, "INSERT INTO `groups` (name, owner_id) VALUES (?, ?)");
+        if (!stmt.valid()) {
+            db_->release(std::move(conn));
+            return {{"success", false}, {"message", "prepare failed"}};
+        }
+        stmt.bindString(1, name);
+        stmt.bindInt64(2, ownerId);
+        if (!stmt.execute()) {
+            db_->release(std::move(conn));
+            return {{"success", false}, {"message", "create failed"}};
+        }
+        int64_t groupId = stmt.lastInsertId();
 
-        // 创建者自动加入群
+        // 创建者自动加入群（只有 int64 参数，字符串拼接安全）
         conn->execute("INSERT INTO group_members (group_id, user_id) VALUES ("
             + std::to_string(groupId) + "," + std::to_string(ownerId) + ")");
         db_->release(std::move(conn));
@@ -236,8 +245,11 @@ public:
             return {{"success", false}, {"message", "only owner can set announcement"}};
         }
 
-        conn->execute("UPDATE `groups` SET announcement='" + conn->escape(announcement)
-            + "' WHERE id=" + std::to_string(groupId));
+        // 使用 PreparedStatement 防 SQL 注入
+        PreparedStatement stmt(conn, "UPDATE `groups` SET announcement=? WHERE id=?");
+        stmt.bindString(1, announcement);
+        stmt.bindInt64(2, groupId);
+        stmt.execute();
         db_->release(std::move(conn));
         return {{"success", true}};
     }

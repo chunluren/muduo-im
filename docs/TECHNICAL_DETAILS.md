@@ -466,3 +466,36 @@ LOG_EVENT("login", "user=alice ip=1.2.3.4");
 ```
 
 JSON 格式便于被 ELK / Loki / Splunk 采集索引。
+
+## SQL Prepared Statements
+
+### 风险背景
+
+字符串拼接 SQL（即使有 escape）仍存在风险：
+- escape 实现错误时漏掉字符
+- 字符集不匹配时绕过
+- 开发者忘记调用 escape
+
+prepared statement 通过参数化彻底分离 SQL 模板和数据，是工业标准。
+
+### 实现
+
+新增 `PreparedStatement` 类（src/pool/MySQLPool.h）：
+- 包装 `mysql_stmt_*` API
+- RAII：构造时 prepare，析构时 close
+- 支持 `bindInt64()` 和 `bindString()`
+- INSERT/UPDATE/DELETE 通过 `execute()` 触发
+
+### 已迁移路径
+
+直接接受用户输入字符串的 INSERT/UPDATE 操作：
+- UserService: registerUser, updateProfile, changePassword
+- FriendService: sendRequest
+- AuditService: log（所有字段）
+- GroupService: createGroup, setAnnouncement
+- MessageService: savePrivateMessage, saveGroupMessage（高频）
+
+### 未迁移
+
+只接受 int64 参数的 SQL（无注入风险）继续用字符串拼接。
+SELECT 操作暂未迁移（需要补 fetch API），但全部用 escape() 处理。

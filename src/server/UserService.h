@@ -89,19 +89,24 @@ public:
             return {{"success", false}, {"message", "username already exists"}};
         }
 
-        // 插入用户
+        // 插入用户（使用 PreparedStatement 防 SQL 注入）
         std::string hashedPwd = Protocol::hashPassword(password);
         std::string nick = nickname.empty() ? username : nickname;
-        std::string sql = "INSERT INTO users (username, password, nickname) VALUES ('"
-            + escaped + "', '" + hashedPwd + "', '" + conn->escape(nick) + "')";
 
-        int affected = conn->execute(sql);
-        if (affected <= 0) {
+        PreparedStatement stmt(conn, "INSERT INTO users (username, password, nickname) VALUES (?, ?, ?)");
+        if (!stmt.valid()) {
+            db_->release(std::move(conn));
+            return {{"success", false}, {"message", "prepare failed"}};
+        }
+        stmt.bindString(1, username);
+        stmt.bindString(2, hashedPwd);
+        stmt.bindString(3, nick);
+        if (!stmt.execute()) {
             db_->release(std::move(conn));
             return {{"success", false}, {"message", "register failed"}};
         }
 
-        int64_t userId = conn->lastInsertId();
+        int64_t userId = stmt.lastInsertId();
         db_->release(std::move(conn));
 
         return {{"success", true}, {"userId", userId}, {"message", "registered"}};
@@ -221,24 +226,32 @@ public:
 
     /// 修改用户信息
     json updateProfile(int64_t userId, const std::string& nickname, const std::string& avatar) {
+        if (nickname.empty() && avatar.empty()) {
+            return {{"success", false}, {"message", "nothing to update"}};
+        }
+
         auto conn = db_->acquire(3000);
         if (!conn || !conn->valid()) return {{"success", false}, {"message", "db error"}};
 
-        std::string sql = "UPDATE users SET";
-        bool hasField = false;
-        if (!nickname.empty()) {
-            sql += " nickname='" + conn->escape(nickname) + "'";
-            hasField = true;
+        // 使用 PreparedStatement 防 SQL 注入
+        if (!nickname.empty() && !avatar.empty()) {
+            PreparedStatement stmt(conn, "UPDATE users SET nickname=?, avatar=? WHERE id=?");
+            stmt.bindString(1, nickname);
+            stmt.bindString(2, avatar);
+            stmt.bindInt64(3, userId);
+            stmt.execute();
+        } else if (!nickname.empty()) {
+            PreparedStatement stmt(conn, "UPDATE users SET nickname=? WHERE id=?");
+            stmt.bindString(1, nickname);
+            stmt.bindInt64(2, userId);
+            stmt.execute();
+        } else if (!avatar.empty()) {
+            PreparedStatement stmt(conn, "UPDATE users SET avatar=? WHERE id=?");
+            stmt.bindString(1, avatar);
+            stmt.bindInt64(2, userId);
+            stmt.execute();
         }
-        if (!avatar.empty()) {
-            if (hasField) sql += ",";
-            sql += " avatar='" + conn->escape(avatar) + "'";
-            hasField = true;
-        }
-        if (!hasField) return {{"success", false}, {"message", "nothing to update"}};
 
-        sql += " WHERE id=" + std::to_string(userId);
-        conn->execute(sql);
         db_->release(std::move(conn));
         return {{"success", true}};
     }
@@ -315,7 +328,11 @@ public:
         }
 
         std::string newHash = Protocol::hashPassword(newPassword);
-        conn->execute("UPDATE users SET password='" + newHash + "' WHERE id=" + std::to_string(userId));
+        // 使用 PreparedStatement 防 SQL 注入
+        PreparedStatement stmt(conn, "UPDATE users SET password=? WHERE id=?");
+        stmt.bindString(1, newHash);
+        stmt.bindInt64(2, userId);
+        stmt.execute();
         db_->release(std::move(conn));
         return {{"success", true}};
     }

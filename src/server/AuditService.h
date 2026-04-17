@@ -47,13 +47,20 @@ public:
         auto conn = db_->acquire(1000);
         if (!conn || !conn->valid()) return;  // 静默失败
 
-        std::string sql = "INSERT INTO audit_log (user_id, action, target, ip, detail) VALUES ("
-            + (userId > 0 ? std::to_string(userId) : std::string("NULL"))
-            + ",'" + conn->escape(action) + "'"
-            + ",'" + conn->escape(target) + "'"
-            + ",'" + conn->escape(ip) + "'"
-            + ",'" + conn->escape(detail) + "')";
-        conn->execute(sql);
+        // 使用 PreparedStatement 防 SQL 注入
+        // 注：userId <= 0 时绑定 0 代替原有的 NULL（schema 允许 NULL，此处简化）
+        PreparedStatement stmt(conn, "INSERT INTO audit_log (user_id, action, target, ip, detail) VALUES (?, ?, ?, ?, ?)");
+        if (!stmt.valid()) {
+            db_->release(std::move(conn));
+            return;
+        }
+        stmt.bindInt64(1, userId > 0 ? userId : 0);
+        stmt.bindString(2, action);
+        stmt.bindString(3, target);
+        stmt.bindString(4, ip);
+        stmt.bindString(5, detail);
+        stmt.execute();
+
         db_->release(std::move(conn));
     }
 

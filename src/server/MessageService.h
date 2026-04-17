@@ -49,13 +49,20 @@ public:
         auto conn = db_->acquire(3000);
         if (!conn || !conn->valid()) return false;
 
-        std::string sql = "INSERT INTO private_messages (msg_id, from_user, to_user, content, timestamp) VALUES ('"
-            + conn->escape(msgId) + "'," + std::to_string(from) + "," + std::to_string(to)
-            + ",'" + conn->escape(content) + "'," + std::to_string(timestamp) + ")";
-
-        int ret = conn->execute(sql);
+        // 使用 PreparedStatement 防 SQL 注入
+        PreparedStatement stmt(conn, "INSERT INTO private_messages (msg_id, from_user, to_user, content, timestamp) VALUES (?, ?, ?, ?, ?)");
+        if (!stmt.valid()) {
+            db_->release(std::move(conn));
+            return false;
+        }
+        stmt.bindString(1, msgId);
+        stmt.bindInt64(2, from);
+        stmt.bindInt64(3, to);
+        stmt.bindString(4, content);
+        stmt.bindInt64(5, timestamp);
+        bool ok = stmt.execute() && stmt.affectedRows() > 0;
         db_->release(std::move(conn));
-        return ret > 0;
+        return ok;
     }
 
     /**
@@ -76,13 +83,20 @@ public:
         auto conn = db_->acquire(3000);
         if (!conn || !conn->valid()) return false;
 
-        std::string sql = "INSERT INTO group_messages (msg_id, group_id, from_user, content, timestamp) VALUES ('"
-            + conn->escape(msgId) + "'," + std::to_string(groupId) + "," + std::to_string(from)
-            + ",'" + conn->escape(content) + "'," + std::to_string(timestamp) + ")";
-
-        int ret = conn->execute(sql);
+        // 使用 PreparedStatement 防 SQL 注入
+        PreparedStatement stmt(conn, "INSERT INTO group_messages (msg_id, group_id, from_user, content, timestamp) VALUES (?, ?, ?, ?, ?)");
+        if (!stmt.valid()) {
+            db_->release(std::move(conn));
+            return false;
+        }
+        stmt.bindString(1, msgId);
+        stmt.bindInt64(2, groupId);
+        stmt.bindInt64(3, from);
+        stmt.bindString(4, content);
+        stmt.bindInt64(5, timestamp);
+        bool ok = stmt.execute() && stmt.affectedRows() > 0;
         db_->release(std::move(conn));
-        return ret > 0;
+        return ok;
     }
 
     /**

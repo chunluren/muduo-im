@@ -136,9 +136,11 @@ public:
             return {{"success", false}, {"message", "already friends"}};
         }
 
-        // 插入申请（IGNORE 避免重复）
-        conn->execute("INSERT IGNORE INTO friend_requests (from_user, to_user, status) VALUES ("
-            + std::to_string(fromUser) + "," + std::to_string(toUser) + ", 0)");
+        // 插入申请（IGNORE 避免重复）——使用 PreparedStatement
+        PreparedStatement stmt(conn, "INSERT IGNORE INTO friend_requests (from_user, to_user, status) VALUES (?, ?, 0)");
+        stmt.bindInt64(1, fromUser);
+        stmt.bindInt64(2, toUser);
+        stmt.execute();
         db_->release(std::move(conn));
 
         return {{"success", true}, {"message", "request sent"}};
