@@ -179,7 +179,9 @@ public:
             loginAttempts_.erase(username);
         }
 
-        std::string token = jwt_.generate(userId);
+        // 生成唯一 jti 以支持主动吊销（登出 / 改密 / 封号时写 Redis 黑名单）
+        std::string jti = Protocol::generateMsgId();
+        std::string token = jwt_.generateWithJti(userId, jti);
         return {
             {"success", true},
             {"token", token},
