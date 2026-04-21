@@ -41,7 +41,25 @@ public:
     explicit JWT(const std::string& secret) : secret_(secret) {}
 
     /**
-     * @brief 生成 JWT Token
+     * @struct Claims
+     * @brief JWT payload 解析后的完整 claims
+     */
+    struct Claims {
+        int64_t userId = 0;   ///< 用户 ID
+        std::string jti;       ///< JWT ID（UUID v4，用于黑名单吊销）
+        int64_t iat = 0;       ///< 签发时间（unix 秒）
+        int64_t exp = 0;       ///< 过期时间（unix 秒）
+
+        /// 剩余有效时长（秒），若已过期返回 0
+        int64_t remainingSeconds() const {
+            int64_t now = std::chrono::duration_cast<std::chrono::seconds>(
+                std::chrono::system_clock::now().time_since_epoch()).count();
+            return exp > now ? (exp - now) : 0;
+        }
+    };
+
+    /**
+     * @brief 生成 JWT Token（向后兼容，jti 自动填空串）
      *
      * 根据用户 ID 和过期时间生成一个完整的 JWT 字符串。
      * Token 的 payload 部分包含以下字段：
@@ -54,6 +72,25 @@ public:
      * @return 格式为 "base64url(header).base64url(payload).base64url(signature)" 的 JWT 字符串
      */
     std::string generate(int64_t userId, int expireSeconds = 86400) {
+        return generateWithJti(userId, "", expireSeconds);
+    }
+
+    /**
+     * @brief 生成带 jti 的 JWT Token（支持主动吊销）
+     *
+     * payload 额外包含 jti 字段：
+     * - jti (JWT ID)：UUID v4 格式的唯一标识，用于 Redis 黑名单精准吊销
+     *
+     * 调用方负责生成 jti（通常用 `Protocol::generateMsgId()`）并保存到持久层
+     * （如"当前有效 token 表"），登出 / 改密 / 封号时把该 jti 写入 Redis 黑名单。
+     *
+     * @param userId 用户 ID
+     * @param jti UUID v4 字符串；传空串则 payload 中不包含 jti 字段（向后兼容）
+     * @param expireSeconds token 有效期（秒）
+     * @return JWT 字符串
+     */
+    std::string generateWithJti(int64_t userId, const std::string& jti,
+                                int expireSeconds = 86400) {
         int64_t now = std::chrono::duration_cast<std::chrono::seconds>(
             std::chrono::system_clock::now().time_since_epoch()).count();
 
@@ -63,6 +100,7 @@ public:
             {"iat", now},
             {"exp", now + expireSeconds}
         };
+        if (!jti.empty()) payload["jti"] = jti;
 
         std::string headerB64 = base64UrlEncode(header.dump());
         std::string payloadB64 = base64UrlEncode(payload.dump());
@@ -86,30 +124,54 @@ public:
      * @return 验证成功返回 userId (>0)；验证失败（签名不匹配、已过期、格式错误）返回 -1
      */
     int64_t verify(const std::string& token) {
-        // 拆分三部分
+        Claims claims;
+        return verifyAndParse(token, &claims) ? claims.userId : -1;
+    }
+
+    /**
+     * @brief 验证 JWT 并解析出完整 Claims
+     *
+     * 相比 verify()：
+     * - 多返回 jti（用于黑名单查询）
+     * - 多返回 exp / iat（用于设置黑名单 TTL）
+     *
+     * @param token 待验证的 JWT
+     * @param outClaims 输出参数，验证成功时填充
+     * @return true 验证通过且未过期；false 任意失败原因
+     */
+    bool verifyAndParse(const std::string& token, Claims* outClaims) {
+        if (!outClaims) return false;
+        *outClaims = Claims{};
+
         auto dot1 = token.find('.');
-        if (dot1 == std::string::npos) return -1;
+        if (dot1 == std::string::npos) return false;
         auto dot2 = token.find('.', dot1 + 1);
-        if (dot2 == std::string::npos) return -1;
+        if (dot2 == std::string::npos) return false;
 
         std::string message = token.substr(0, dot2);
         std::string signature = token.substr(dot2 + 1);
 
         // 验证签名
         std::string expected = base64UrlEncode(hmacSha256(message));
-        if (signature != expected) return -1;
+        if (signature != expected) return false;
 
-        // 解析 payload
-        std::string payloadStr = base64UrlDecode(token.substr(dot1 + 1, dot2 - dot1 - 1));
+        std::string payloadStr = base64UrlDecode(
+            token.substr(dot1 + 1, dot2 - dot1 - 1));
         try {
             json payload = json::parse(payloadStr);
-            int64_t exp = payload["exp"].get<int64_t>();
+            outClaims->userId = payload.value("userId", int64_t{0});
+            outClaims->exp = payload.value("exp", int64_t{0});
+            outClaims->iat = payload.value("iat", int64_t{0});
+            outClaims->jti = payload.value("jti", std::string{});
+
             int64_t now = std::chrono::duration_cast<std::chrono::seconds>(
                 std::chrono::system_clock::now().time_since_epoch()).count();
-            if (now > exp) return -1;  // 过期
-            return payload["userId"].get<int64_t>();
+            if (outClaims->exp == 0 || now > outClaims->exp) return false;
+            if (outClaims->userId <= 0) return false;
+
+            return true;
         } catch (...) {
-            return -1;
+            return false;
         }
     }
 

@@ -31,6 +31,7 @@
 #include "server/FriendService.h"
 #include "server/GroupService.h"
 #include "server/MessageService.h"
+#include "server/JwtRevocationService.h"
 #include "http/HttpServer.h"
 #include "http/MultipartParser.h"
 #include "websocket/WebSocketServer.h"
@@ -89,6 +90,8 @@ public:
         , messageService_(mysqlPool_)
         , onlineManager_(redisPool_)
         , auditService_(mysqlPool_)
+        , jwtRevocation_(redisPool_)
+        , jwt_(jwtSecret)
         , jwtSecret_(jwtSecret)
         , mysqlBreaker_(5, 2, 10)   // 连续 5 次失败打开，2 次成功恢复，10 秒超时
         , redisBreaker_(5, 2, 10)
@@ -146,22 +149,42 @@ private:
     /**
      * @brief 从 HTTP 请求的 Authorization 头中提取并验证 JWT Token
      *
+     * 验证流程：
+     * 1. 从 Authorization 头提取 Bearer Token
+     * 2. 校验 JWT 签名与 exp
+     * 3. 查询 jti 黑名单（若在黑名单则拒绝）
+     *
      * @param req HTTP 请求对象，从中读取 Authorization 头
-     * @return 验证成功返回用户 ID（> 0）；Token 缺失、格式错误或验证失败返回 -1
+     * @param outClaims 可选输出参数，返回完整解析后的 Claims（含 jti）
+     * @return 验证成功返回用户 ID（> 0）；任意失败返回 -1
      */
-    int64_t authFromRequest(const HttpRequest& req) {
+    int64_t authFromRequest(const HttpRequest& req, JWT::Claims* outClaims = nullptr) {
         std::string auth = req.getHeader("authorization");
         if (auth.size() <= 7 || auth.substr(0, 7) != "Bearer ") {
             return -1;
         }
         std::string token = auth.substr(7);
-        return userService_.verifyToken(token);
+
+        JWT::Claims claims;
+        if (!jwt_.verifyAndParse(token, &claims)) {
+            return -1;
+        }
+        // jti 吊销检查：token 签名 / 过期通过后再查黑名单
+        if (!claims.jti.empty() && jwtRevocation_.isRevoked(claims.jti)) {
+            LOG_WARN_JSON("jwt_revoked_blocked",
+                          "uid=" + std::to_string(claims.userId) +
+                          " jti=" + claims.jti);
+            return -1;
+        }
+        if (outClaims) *outClaims = claims;
+        return claims.userId;
     }
 
     /// 鉴权辅助：失败时设置 401 响应并返回 -1
     /// 用法: int64_t userId = requireAuth(req, resp); if (userId < 0) return;
-    int64_t requireAuth(const HttpRequest& req, HttpResponse& resp) {
-        int64_t userId = authFromRequest(req);
+    int64_t requireAuth(const HttpRequest& req, HttpResponse& resp,
+                         JWT::Claims* outClaims = nullptr) {
+        int64_t userId = authFromRequest(req, outClaims);
         if (userId < 0) {
             resp.setStatusCode(HttpStatusCode::UNAUTHORIZED);
             resp.setText("unauthorized");
@@ -236,6 +259,7 @@ private:
         httpServer_.GET ("/api/user/info",     [this](const HttpRequest& req, HttpResponse& resp) { handleGetUserInfo(req, resp); });
         httpServer_.POST("/api/user/password", [this](const HttpRequest& req, HttpResponse& resp) { handleChangePassword(req, resp); });
         httpServer_.POST("/api/user/delete",   [this](const HttpRequest& req, HttpResponse& resp) { handleDeleteAccount(req, resp); });
+        httpServer_.POST("/api/logout",        [this](const HttpRequest& req, HttpResponse& resp) { handleLogout(req, resp); });
 
         // ---- File upload ----
         httpServer_.POST("/api/upload", [this](const HttpRequest& req, HttpResponse& resp) { handleUpload(req, resp); });
@@ -510,7 +534,8 @@ private:
     }
 
     void handleChangePassword(const HttpRequest& req, HttpResponse& resp) {
-        int64_t userId = requireAuth(req, resp);
+        JWT::Claims claims;
+        int64_t userId = requireAuth(req, resp, &claims);
         if (userId < 0) return;
         json j;
         if (!parseJsonBody(req, resp, j)) return;
@@ -518,21 +543,46 @@ private:
             userId, j.value("oldPassword", ""), j.value("newPassword", "")
         );
         if (result.value("success", false)) {
+            // 改密成功后吊销当前 token，强制用户用新密码重新登录（防止旧 token 继续使用）
+            if (!claims.jti.empty()) {
+                jwtRevocation_.revoke(claims.jti, claims.remainingSeconds());
+            }
             auditService_.log(userId, "change_password", "", getClientIp(req));
         }
         resp.setJson(result.dump());
     }
 
     void handleDeleteAccount(const HttpRequest& req, HttpResponse& resp) {
-        int64_t userId = requireAuth(req, resp);
+        JWT::Claims claims;
+        int64_t userId = requireAuth(req, resp, &claims);
         if (userId < 0) return;
         json j;
         if (!parseJsonBody(req, resp, j)) return;
         auto result = userService_.deleteAccount(userId, j.value("password", ""));
         if (result.value("success", false)) {
+            // 注销账号后吊销当前 token
+            if (!claims.jti.empty()) {
+                jwtRevocation_.revoke(claims.jti, claims.remainingSeconds());
+            }
             auditService_.log(userId, "delete_account", "", getClientIp(req));
         }
         resp.setJson(result.dump());
+    }
+
+    /// POST /api/logout — 主动登出，将当前 token 的 jti 加入 Redis 黑名单
+    void handleLogout(const HttpRequest& req, HttpResponse& resp) {
+        JWT::Claims claims;
+        int64_t userId = requireAuth(req, resp, &claims);
+        if (userId < 0) return;
+
+        // 旧版（无 jti）token 无法精准吊销，返回 success 但不实际吊销
+        bool revoked = false;
+        if (!claims.jti.empty()) {
+            revoked = jwtRevocation_.revoke(claims.jti, claims.remainingSeconds());
+        }
+        auditService_.log(userId, "logout", "", getClientIp(req));
+        resp.setJson(json({{"success", true},
+                           {"revoked", revoked}}).dump());
     }
 
     // ==================== Route Handlers: Upload ====================
@@ -1172,6 +1222,10 @@ private:
     MessageService messageService_;
     OnlineManager onlineManager_;
     AuditService auditService_;
+    JwtRevocationService jwtRevocation_;  ///< jti 黑名单吊销服务
+
+    /// ChatServer 直接持有 JWT 实例以解析 jti（UserService 的 JWT 是内部使用）
+    JWT jwt_;
 
     std::string jwtSecret_;
 
