@@ -21,6 +21,7 @@
 #include <iomanip>
 #include <openssl/evp.h>
 #include <argon2.h>
+#include "util/Snowflake.h"
 
 using json = nlohmann::json;
 
@@ -79,6 +80,25 @@ inline std::string generateMsgId() {
              a, (b >> 16) & 0xFFFF, b & 0xFFFF,
              (c >> 16) & 0xFFFF, c & 0xFFFF, d);
     return buf;
+}
+
+/**
+ * @brief 生成服务端主导的 Snowflake 消息 ID（时间有序，支持多实例）
+ *
+ * 相比 UUID v4：
+ * - **时间有序**：同一 worker 生成的 ID 严格递增，按 ID 排序等价于按时间排序
+ * - **多实例唯一**：worker_id 占 10 bit，支持 1024 个实例并行
+ * - **更短**：19 位十进制字符（约 60% 于 UUID 的 36 字符）
+ *
+ * 返回十进制字符串（兼容现有 `VARCHAR` 类型的 `msg_id` 字段）。
+ * 需要先通过 `Snowflake::instance().init()` 初始化（在 main.cpp 启动时调用）。
+ *
+ * @return 形如 "172263581197272608" 的十进制字符串
+ * @throw std::runtime_error Snowflake 未 init、或遇到大幅时钟回拨
+ */
+inline std::string generateServerMsgId() {
+    int64_t id = mymuduo::Snowflake::instance().nextId();
+    return std::to_string(id);
 }
 
 /**

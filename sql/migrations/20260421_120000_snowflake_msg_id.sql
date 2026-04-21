@@ -1,0 +1,33 @@
+-- Feature: Snowflake ID generator for messages (Phase 1.1)
+-- Author: chunluren
+-- Ticket: #2
+-- Affects: no schema changes required (msg_id is already VARCHAR)
+-- Estimated duration: 0 (advisory migration)
+
+-- +migrate Up
+-- 本迁移说明：
+--
+-- 当前 schema msg_id 字段是 VARCHAR（存 UUID v4，36 字符）。
+-- 切换到 Snowflake 后，msg_id 存 19 字符的十进制数字字符串。
+-- VARCHAR 长度足够，无需改 schema，**仅文档说明**。
+--
+-- 如果希望将 msg_id 改为 BIGINT 提升存储效率 + 索引性能，执行以下步骤：
+--   1. 添加新列 msg_id_bigint BIGINT（允许 NULL，便于双写期）
+--   2. 应用层双写：既写 msg_id（VARCHAR），又写 msg_id_bigint（BIGINT）
+--   3. 迁移历史数据：UPDATE private_messages SET msg_id_bigint = ... WHERE id_bigint IS NULL
+--      （历史 UUID 无法转 BIGINT，可以用 Snowflake 回填或保留 NULL）
+--   4. 应用层读改为从 msg_id_bigint 读
+--   5. 删除 msg_id VARCHAR 列，重命名 msg_id_bigint → msg_id
+--
+-- 目前保守方案：不改 schema，直接用字符串存储 Snowflake 十进制值，
+-- 保证向后兼容历史 UUID 消息。
+
+-- Optional: 增加索引以加速按 Snowflake ID 排序的时序查询
+-- （当前已有按 timestamp 的索引，可不加）
+-- CREATE INDEX idx_msg_id_desc ON private_messages (msg_id DESC);
+-- CREATE INDEX idx_msg_id_desc ON group_messages (msg_id DESC);
+
+-- +migrate Down
+-- 无需回滚（未改 schema）
+-- DROP INDEX idx_msg_id_desc ON private_messages;
+-- DROP INDEX idx_msg_id_desc ON group_messages;

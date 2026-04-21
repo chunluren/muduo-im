@@ -12,6 +12,7 @@
 #include "common/Logging.h"
 #include "net/EventLoop.h"
 #include "asynclogger/AsyncLogger.h"
+#include "util/Snowflake.h"
 #include <cstdlib>
 #include <iostream>
 #include <signal.h>
@@ -70,6 +71,19 @@ int main(int argc, char* argv[]) {
         AsyncLogger::instance().setLogFile(logFile);
         AsyncLogger::instance().setLogLevel(static_cast<LogLevel>(logLevel));
         AsyncLogger::instance().start();
+    }
+
+    // ---- 初始化 Snowflake ID 生成器（服务端消息 ID） ----
+    // worker_id 从环境变量 MUDUO_IM_WORKER_ID 读取（0-1023），未设置则默认 0
+    // 多实例部署时必须为每个实例设置唯一 worker_id，否则 ID 会冲突
+    try {
+        mymuduo::Snowflake::instance().initFromEnv("MUDUO_IM_WORKER_ID");
+        int64_t wid = mymuduo::Snowflake::instance().workerId();
+        LOG_EVENT("snowflake_init", "worker_id=" + std::to_string(wid));
+        std::cerr << "Snowflake initialized with worker_id=" << wid << std::endl;
+    } catch (const std::exception& e) {
+        std::cerr << "FATAL: Snowflake init failed: " << e.what() << std::endl;
+        return 1;
     }
 
     // ---- MySQL 连接池配置 ----

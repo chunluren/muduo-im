@@ -802,7 +802,7 @@ private:
             return;
         }
 
-        std::string msgId = Protocol::generateMsgId();
+        std::string msgId = Protocol::generateServerMsgId();  // Snowflake 时序有序
 
         // Idempotent delivery: dedup by msgId
         if (isDuplicate(msgId)) {
@@ -864,7 +864,7 @@ private:
             return;
         }
 
-        std::string msgId = Protocol::generateMsgId();
+        std::string msgId = Protocol::generateServerMsgId();  // Snowflake 时序有序
 
         // Idempotent delivery: dedup by msgId
         if (isDuplicate(msgId)) {
@@ -922,7 +922,7 @@ private:
         int64_t toUserId = 0;
         try { toUserId = std::stoll(toStr); } catch (...) {}
 
-        std::string msgId = Protocol::generateMsgId();
+        std::string msgId = Protocol::generateServerMsgId();  // Snowflake 时序有序
         int64_t timestamp = Protocol::nowMs();
 
         // Save as private message with file URL as content
