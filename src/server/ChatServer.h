@@ -220,8 +220,11 @@ private:
     // ==================== HTTP Route Table ====================
 
     void setupHttpRoutes() {
-        // 静态文件服务（前端）
-        httpServer_.serveStatic("/", "../web");
+        // 静态文件服务（前端）。优先级：env > 默认 ../web（相对 cwd）
+        // 解决 cwd 不在 build/ 时找不到前端文件的问题（systemd / docker / IDE 调试）
+        const char* envWebRoot = std::getenv("MUDUO_IM_WEB_ROOT");
+        std::string webRoot = (envWebRoot && *envWebRoot) ? envWebRoot : "../web";
+        httpServer_.serveStatic("/", webRoot);
 
         // ---- Auth ----
         httpServer_.POST("/api/register", [this](const HttpRequest& req, HttpResponse& resp) { handleRegister(req, resp); });
@@ -852,11 +855,16 @@ private:
             return;
         }
 
-        std::string msgId = Protocol::generateServerMsgId();  // Snowflake 时序有序
+        // 服务端权威 msgId 用 Snowflake（时序有序、跨实例唯一），用于持久化和撤回
+        std::string msgId = Protocol::generateServerMsgId();
+        // 客户端 msgId 用于幂等去重 + ack 关联本地消息（前端 DOM 节点替换）
+        std::string clientMsgId = j.value("msgId", "");
 
-        // Idempotent delivery: dedup by msgId
-        if (isDuplicate(msgId)) {
-            session->sendText(Protocol::makeAck(msgId));
+        // 幂等：以客户端 msgId 为 key 去重（同一客户端 msgId 不会被处理两次）
+        // 兼容：客户端没传时退化为按服务端 msgId 去重
+        std::string dedupKey = clientMsgId.empty() ? msgId : clientMsgId;
+        if (isDuplicate(dedupKey)) {
+            session->sendText(Protocol::makeAck(msgId, clientMsgId));
             return;
         }
 
@@ -873,8 +881,8 @@ private:
             messageService_.savePrivateMessage(msgId, fromUserId, toUserId, content, timestamp);
         }
 
-        // ACK sender
-        session->sendText(Protocol::makeAck(msgId));
+        // ACK 把 clientMsgId 透传回去，前端用它定位 DOM 节点把 msgId 替换为服务端权威 msgId
+        session->sendText(Protocol::makeAck(msgId, clientMsgId));
 
         // Forward to recipient if online
         auto recipientSession = onlineManager_.getSession(toUserId);
@@ -914,11 +922,13 @@ private:
             return;
         }
 
-        std::string msgId = Protocol::generateServerMsgId();  // Snowflake 时序有序
+        // 服务端权威 msgId（Snowflake）+ 客户端 msgId（幂等 + ack 关联）
+        std::string msgId = Protocol::generateServerMsgId();
+        std::string clientMsgId = j.value("msgId", "");
 
-        // Idempotent delivery: dedup by msgId
-        if (isDuplicate(msgId)) {
-            session->sendText(Protocol::makeAck(msgId));
+        std::string dedupKey = clientMsgId.empty() ? msgId : clientMsgId;
+        if (isDuplicate(dedupKey)) {
+            session->sendText(Protocol::makeAck(msgId, clientMsgId));
             return;
         }
 
@@ -935,8 +945,8 @@ private:
             messageService_.saveGroupMessage(msgId, groupId, fromUserId, content, timestamp);
         }
 
-        // ACK sender
-        session->sendText(Protocol::makeAck(msgId));
+        // ACK 透传 clientMsgId
+        session->sendText(Protocol::makeAck(msgId, clientMsgId));
 
         // Forward to all online group members (skip sender)
         auto memberIds = groupService_.getMemberIds(groupId);

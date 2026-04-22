@@ -2576,7 +2576,38 @@ function handleWsMessage(data) {
       break;
     }
     case 'ack': {
-      // Message acknowledged
+      // 服务端 ACK：data.msgId 是服务端权威 msgId（Snowflake），
+      // data.clientMsgId 是发送时本地生成的临时 UUID。
+      // 把本地缓存和 DOM 上的临时 UUID 替换为服务端权威 msgId，
+      // 否则后续撤回 / 引用都拿不到正确 ID。
+      if (data.clientMsgId && data.msgId && data.clientMsgId !== data.msgId) {
+        const tmpId = data.clientMsgId;
+        const realId = data.msgId;
+
+        // 更新所有缓存里的 msgId
+        for (const key in messageCache) {
+          const arr = messageCache[key];
+          for (const m of arr) {
+            if (m.msgId === tmpId) m.msgId = realId;
+            if (m.replyTo === tmpId) m.replyTo = realId;
+          }
+        }
+
+        // 更新 DOM 节点的 data-msg-id 和 onclick 引用
+        const domNode = document.querySelector(`[data-msg-id="${tmpId}"]`);
+        if (domNode) {
+          domNode.setAttribute('data-msg-id', realId);
+          // 重新渲染该消息的按钮（撤回 / 回复）以更新 onclick 中的 msgId
+          const recallBtn = domNode.querySelector('.btn-recall');
+          if (recallBtn) recallBtn.setAttribute('onclick', `recallMessage('${realId}')`);
+          const replyBtn = domNode.querySelector('.btn-reply');
+          if (replyBtn) {
+            const oldOnclick = replyBtn.getAttribute('onclick') || '';
+            replyBtn.setAttribute('onclick',
+              oldOnclick.replace(`'${tmpId}'`, `'${realId}'`));
+          }
+        }
+      }
       break;
     }
     case 'online': {

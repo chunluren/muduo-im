@@ -17,8 +17,10 @@ if ! redis-cli ping 2>/dev/null | grep -q PONG; then
     sleep 1
 fi
 
-# 建表（幂等）
-sudo mysql < sql/init.sql 2>/dev/null
+# 建库 + 建表（幂等）
+# 注意：init.sql 已改为不带 CREATE DATABASE / USE，需在命令行指定目标库
+sudo mysql -e "CREATE DATABASE IF NOT EXISTS muduo_im DEFAULT CHARACTER SET utf8mb4" 2>/dev/null
+sudo mysql muduo_im < sql/init.sql 2>/dev/null
 
 # 编译（如果没有二进制或源码更新了）
 if [ ! -f build/muduo-im ] || [ "$(find src/ -newer build/muduo-im -name '*.h' -o -name '*.cpp' 2>/dev/null)" ]; then

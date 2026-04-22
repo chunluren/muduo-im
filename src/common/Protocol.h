@@ -187,8 +187,11 @@ inline std::string makeGroupMsg(int64_t from, int64_t groupId, const std::string
  * @param msgId 被确认的消息 ID
  * @return JSON 序列化后的字符串
  */
-inline std::string makeAck(const std::string& msgId) {
-    return json({{"type", ACK}, {"msgId", msgId}}).dump();
+inline std::string makeAck(const std::string& msgId,
+                            const std::string& clientMsgId = "") {
+    json j = {{"type", ACK}, {"msgId", msgId}};
+    if (!clientMsgId.empty()) j["clientMsgId"] = clientMsgId;
+    return j.dump();
 }
 
 /**
