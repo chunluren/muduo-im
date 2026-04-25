@@ -150,6 +150,15 @@ int main(int argc, char* argv[]) {
         }
     }
 
+    // Phase 5.3 冷数据归档查询服务地址（开发默认 127.0.0.1:9300）
+    {
+        std::string archHost = config.get("archive.query_host", "127.0.0.1");
+        int archPort = config.getInt("archive.query_port", 9300);
+        if (!archHost.empty() && archPort > 0) {
+            server.enableArchiveQuery(archHost, archPort);
+        }
+    }
+
     server.start();
 
     std::cout << "=== muduo-im ===" << std::endl;

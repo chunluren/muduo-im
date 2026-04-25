@@ -50,6 +50,11 @@
 #include <unordered_set>
 #include <vector>
 #include <sys/stat.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <unistd.h>
+#include <cstring>
 
 using json = nlohmann::json;
 
@@ -113,6 +118,41 @@ public:
      * @brief 配置 ElasticSearch 集群（Phase 4.4）
      * @param nodes ES 节点列表 ["host:port", ...]；空列表关闭 ES 走 MySQL 降级
      */
+    /**
+     * @brief 配置归档查询服务地址（Phase 5.3）
+     * @param host  archive_query_server host（一般 127.0.0.1）
+     * @param port  端口（默认 9300）
+     */
+    void enableArchiveQuery(const std::string& host, int port) {
+        archiveQueryHost_ = host;
+        archiveQueryPort_ = port;
+    }
+
+    /**
+     * @brief 简易同步 HTTP GET（用于调归档查询服务，与 ESClient 风格一致）
+     */
+    static std::string httpGetSync(const std::string& host, int port, const std::string& path) {
+        int sockfd = ::socket(AF_INET, SOCK_STREAM, 0);
+        if (sockfd < 0) return "";
+        struct timeval tv; tv.tv_sec = 3; tv.tv_usec = 0;
+        ::setsockopt(sockfd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+        ::setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+        struct sockaddr_in addr; std::memset(&addr, 0, sizeof(addr));
+        addr.sin_family = AF_INET;
+        addr.sin_port = htons(port);
+        if (::inet_pton(AF_INET, host.c_str(), &addr.sin_addr) <= 0) { ::close(sockfd); return ""; }
+        if (::connect(sockfd, (sockaddr*)&addr, sizeof(addr)) < 0) { ::close(sockfd); return ""; }
+        std::string req = "GET " + path + " HTTP/1.1\r\nHost: " + host
+                          + "\r\nConnection: close\r\n\r\n";
+        ::send(sockfd, req.c_str(), req.size(), 0);
+        std::string raw; char buf[4096]; ssize_t n;
+        while ((n = ::recv(sockfd, buf, sizeof(buf), 0)) > 0) raw.append(buf, n);
+        ::close(sockfd);
+        auto headerEnd = raw.find("\r\n\r\n");
+        if (headerEnd == std::string::npos) return "";
+        return raw.substr(headerEnd + 4);
+    }
+
     void enableElasticsearch(const std::vector<std::string>& nodes) {
         if (nodes.empty()) {
             esClient_.reset();
@@ -489,6 +529,42 @@ private:
         json result = (groupId > 0)
             ? messageService_.getGroupHistory(groupId, 50, before)
             : messageService_.getPrivateHistory(userId, peerId, 50, before);
+
+        // Phase 5.3 冷数据归档查询：MySQL 返回不足 limit（说明可能要往更早翻），
+        // 尝试从 archive_query_server 补足归档消息
+        if (archiveQueryHost_.size() > 0 && result.is_array() && result.size() < 50) {
+            int64_t needLimit = 50 - (int64_t)result.size();
+            // 计算 archive 查询的 before_ts：优先用最旧热消息的时间戳，否则用 client 传的 before
+            int64_t archBefore = before > 0 ? before : (int64_t)9'999'999'999'999LL;
+            if (!result.empty()) {
+                int64_t oldest = result.back().value("timestamp", archBefore);
+                if (oldest > 0 && oldest < archBefore) archBefore = oldest;
+            }
+            std::string queryUrl;
+            if (groupId > 0) {
+                queryUrl = "/query?kind=group&group_id=" + std::to_string(groupId)
+                            + "&before_ts=" + std::to_string(archBefore)
+                            + "&limit=" + std::to_string(needLimit);
+            } else {
+                queryUrl = "/query?kind=private&user_id=" + std::to_string(userId)
+                            + "&peer_id=" + std::to_string(peerId)
+                            + "&before_ts=" + std::to_string(archBefore)
+                            + "&limit=" + std::to_string(needLimit);
+            }
+            std::string archResp = httpGetSync(archiveQueryHost_, archiveQueryPort_, queryUrl);
+            if (!archResp.empty()) {
+                json arch = json::parse(archResp, nullptr, false);
+                if (!arch.is_discarded() && arch.value("success", false)) {
+                    for (auto& m : arch.value("messages", json::array())) {
+                        m["archived"] = true;
+                        result.push_back(m);
+                    }
+                    LOG_EVENT("history_archive_merged",
+                              "user=" + std::to_string(userId)
+                              + " arch_count=" + std::to_string(arch.value("count", 0)));
+                }
+            }
+        }
         resp.setJson(result.dump());
     }
 
@@ -2002,6 +2078,10 @@ private:
     AuditService auditService_;
     JwtRevocationService jwtRevocation_;  ///< jti 黑名单吊销服务
     std::unique_ptr<ESClient> esClient_;  ///< ES 客户端（Phase 4.4）；nullptr=未启用
+
+    // Phase 5.3 冷数据归档查询服务地址（空字符串 = 未启用）
+    std::string archiveQueryHost_;
+    int archiveQueryPort_ = 0;
 
     /// ChatServer 直接持有 JWT 实例以解析 jti（UserService 的 JWT 是内部使用）
     JWT jwt_;
