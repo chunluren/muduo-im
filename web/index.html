@@ -516,6 +516,26 @@ body {
 }
 
 /* Recalled message */
+/* @ 提醒样式（Phase 2.3） */
+.mention-tag {
+  color: #1890ff;
+  font-weight: 600;
+  background: rgba(24, 144, 255, 0.08);
+  padding: 1px 4px;
+  border-radius: 3px;
+  margin: 0 1px;
+}
+.message-item.message-mentioned .message-bubble {
+  background: linear-gradient(to right, #fff8e6, #fffbf2) !important;
+  border-left: 3px solid #faad14;
+  box-shadow: 0 1px 3px rgba(250, 173, 20, 0.2);
+}
+.message-item.own.message-mentioned .message-bubble {
+  background: #e6f7ff !important;
+  border-right: 3px solid #1890ff;
+  border-left: none;
+}
+
 .message-recalled .message-bubble {
   background: transparent !important;
   color: #999 !important;
@@ -1745,6 +1765,109 @@ function generateUUID() {
   });
 }
 
+// ===== @ Mention Support (Phase 2.3) =====
+// 群成员缓存：{groupId: [{userId, username, nickname}, ...]}
+// 用于 sendMessage 时把 @username 解析为 mentions: [userId]
+let groupMembersCache = {};
+let groupMembersCacheTime = {};
+
+async function loadGroupMembersForMention(groupId) {
+  // 30 秒内有缓存就跳过
+  const now = Date.now();
+  if (groupMembersCache[groupId] && (now - (groupMembersCacheTime[groupId] || 0)) < 30000) {
+    return;
+  }
+  try {
+    const data = await api('GET', '/api/groups/members?groupId=' + groupId);
+    const members = data.members || data;
+    if (Array.isArray(members)) {
+      groupMembersCache[groupId] = members;
+      groupMembersCacheTime[groupId] = now;
+    }
+  } catch (e) {
+    console.warn('加载群成员失败（@ 解析将不可用）:', e);
+  }
+}
+
+// 渲染消息内容时把命中群成员的 @username 高亮显示
+// 输入：明文 content；输出：转义后的 HTML，含 <span class="mention-tag">@xxx</span>
+function renderContentWithMentions(content, chat) {
+  const escaped = escapeHtml(content || '');
+  if (!chat || chat.type !== 'group') return escaped;
+  const members = groupMembersCache[chat.id];
+  if (!members || !members.length) return escaped;
+  // 在已 escape 的字符串上做替换，正则同 parseMentions
+  return escaped.replace(/@([^\s,，。！？!?:;：；、()（）\[\]【】"'""'']+)/g, (full, name) => {
+    const found = members.find(mb => mb.username === name || mb.nickname === name);
+    return found
+      ? '<span class="mention-tag">@' + escapeHtml(name) + '</span>'
+      : full;
+  });
+}
+
+// 从消息文本里解析所有 @username（支持中英文 / 数字 / 下划线）
+// 返回被 @ 用户的 userId 字符串数组（去重，过滤自己 + 非群成员）
+function parseMentions(text, groupId) {
+  if (!groupId) return [];
+  const members = groupMembersCache[groupId];
+  if (!members || !members.length) return [];
+
+  // 正则：@ 后接非空白非标点字符（含中英文 / 数字 / 下划线 / 中文范围）
+  // 终止符：空格、标点（半角中文）、行尾
+  const re = /@([^\s,，。！？!?:;：；、()（）\[\]【】"'""'']+)/g;
+  const matches = new Set();
+  let m;
+  while ((m = re.exec(text)) !== null) {
+    const name = m[1];
+    // 在群成员里查 username 或 nickname 匹配
+    const found = members.find(mb =>
+      mb.userId != userId && (mb.username === name || mb.nickname === name));
+    if (found) matches.add(String(found.userId));
+  }
+  return Array.from(matches);
+}
+
+// ===== Message Ordering (Phase 2.2) =====
+// 消息按 msgId 排序，保证同会话顺序与服务端一致：
+// - 服务端 msgId 是 Snowflake（19 位十进制数字字符串），前缀含毫秒时间戳，字典序 == 时序
+// - 本地未 ack 的消息 msgId 是 UUID v4（含连字符）→ 排到最后（视为"最新"）
+// - 同时存在 Snowflake 和 UUID 时，UUID 在 Snowflake 之后（用 timestamp 兜底）
+function cmpByMsgId(a, b) {
+  const aIsSnow = a.msgId && /^\d+$/.test(a.msgId);
+  const bIsSnow = b.msgId && /^\d+$/.test(b.msgId);
+
+  if (aIsSnow && bIsSnow) {
+    // 两个都是 Snowflake：长度相同时字典序即时序，长度不同时短的在前
+    if (a.msgId.length !== b.msgId.length) {
+      return a.msgId.length - b.msgId.length;
+    }
+    return a.msgId < b.msgId ? -1 : (a.msgId > b.msgId ? 1 : 0);
+  }
+  if (aIsSnow && !bIsSnow) return -1;  // Snowflake 在 UUID 前
+  if (!aIsSnow && bIsSnow) return 1;
+  // 两个都是 UUID 或两个都没 msgId：按 timestamp
+  return (a.timestamp || 0) - (b.timestamp || 0);
+}
+
+function sortMessages(arr) {
+  if (!Array.isArray(arr) || arr.length < 2) return;
+  arr.sort(cmpByMsgId);
+}
+
+// 把新消息插入有序数组（保持已排序状态）
+// O(N) 但 IM 场景 cache 通常不大且新消息多在末尾，实际近 O(1)
+function insertMessageSorted(arr, msg) {
+  if (!arr.length || cmpByMsgId(arr[arr.length - 1], msg) <= 0) {
+    arr.push(msg);
+    return arr.length - 1;
+  }
+  // 从尾向前找插入点（适配"基本有序，偶尔乱序到达"场景）
+  let i = arr.length - 1;
+  while (i >= 0 && cmpByMsgId(arr[i], msg) > 0) i--;
+  arr.splice(i + 1, 0, msg);
+  return i + 1;
+}
+
 // ===== Time Format =====
 function formatTime(ts) {
   if (!ts) return '';
@@ -2186,6 +2309,11 @@ async function selectChat(type, id, name) {
   const key = type + '_' + id;
   unreadCounts[key] = 0;
 
+  // 群聊：异步加载成员列表给 @ 解析用（不阻塞 history 加载）
+  if (type === 'group') {
+    loadGroupMembersForMention(id);
+  }
+
   renderFriendList();
   renderGroupList();
   renderChatArea();
@@ -2213,6 +2341,7 @@ async function selectChat(type, id, name) {
       replyTo: m.replyTo,
       timestamp: m.timestamp
     }));
+    sortMessages(messageCache[key]);
     renderMessages();
 
     // Send read ack for friend chats
@@ -2363,7 +2492,13 @@ function appendMessageToDOM(msg) {
       </a>`;
     }
   } else {
-    bubbleContent = escapeHtml(msg.content);
+    // 群聊消息中的 @ 名字加高亮（命中本群成员才高亮，避免误伤）
+    bubbleContent = renderContentWithMentions(msg.content, currentChat);
+  }
+
+  // 被 @ 用户消息整条加高亮边框
+  if (msg.mention === true || (Array.isArray(msg.mentions) && msg.mentions.includes(String(userId)))) {
+    div.classList.add('message-mentioned');
   }
 
   // Build quoted message if this is a reply
@@ -2455,6 +2590,14 @@ function sendMessage() {
     msg.replyTo = replyingTo.msgId;
   }
 
+  // 群聊：解析 @ 提醒
+  if (currentChat.type === 'group') {
+    const mentions = parseMentions(content, currentChat.id);
+    if (mentions.length > 0) {
+      msg.mentions = mentions;
+    }
+  }
+
   ws.send(JSON.stringify(msg));
 
   // Add to local cache
@@ -2468,7 +2611,7 @@ function sendMessage() {
     replyTo: replyingTo ? replyingTo.msgId : undefined,
     timestamp: Date.now()
   };
-  messageCache[key].push(localMsg);
+  insertMessageSorted(messageCache[key], localMsg);
 
   appendMessageToDOM(localMsg);
   scrollToBottom();
@@ -2544,11 +2687,16 @@ function handleWsMessage(data) {
       const key = 'friend_' + fromId;
       if (!messageCache[key]) messageCache[key] = [];
       const msg = { msgId: data.msgId, from: fromId, to: data.to, content: data.content, replyTo: data.replyTo, timestamp: data.timestamp };
-      messageCache[key].push(msg);
+      const insertedAt = insertMessageSorted(messageCache[key], msg);
 
       if (currentChat && currentChat.type === 'friend' && currentChat.id == fromId) {
-        appendMessageToDOM(msg);
-        scrollToBottom();
+        // 插入在末尾时直接 append；否则重 render（保证 DOM 与有序 cache 一致）
+        if (insertedAt === messageCache[key].length - 1) {
+          appendMessageToDOM(msg);
+          scrollToBottom();
+        } else {
+          renderMessages();
+        }
         // Auto-send read ack since we are viewing this chat
         sendReadAck(fromId, msg.msgId);
       } else {
@@ -2563,12 +2711,21 @@ function handleWsMessage(data) {
       if (!messageCache[key]) messageCache[key] = [];
       // Skip own messages (already displayed locally)
       if (data.from == userId) break;
-      const msg = { msgId: data.msgId, from: data.from, to: groupId, content: data.content, replyTo: data.replyTo, timestamp: data.timestamp };
-      messageCache[key].push(msg);
+      const msg = {
+        msgId: data.msgId, from: data.from, to: groupId,
+        content: data.content, replyTo: data.replyTo, timestamp: data.timestamp,
+        mention: data.mention === true,
+        mentions: Array.isArray(data.mentions) ? data.mentions : undefined
+      };
+      const insertedAt = insertMessageSorted(messageCache[key], msg);
 
       if (currentChat && currentChat.type === 'group' && currentChat.id == groupId) {
-        appendMessageToDOM(msg);
-        scrollToBottom();
+        if (insertedAt === messageCache[key].length - 1) {
+          appendMessageToDOM(msg);
+          scrollToBottom();
+        } else {
+          renderMessages();
+        }
       } else {
         unreadCounts[key] = (unreadCounts[key] || 0) + 1;
         renderGroupList();
@@ -2649,14 +2806,18 @@ function handleWsMessage(data) {
         fileSize: data.fileSize,
         timestamp: data.timestamp
       };
-      messageCache[fileKey].push(fileMsg);
+      const fileInsertedAt = insertMessageSorted(messageCache[fileKey], fileMsg);
 
       const isFileCurrentChat = data.groupId
         ? (currentChat && currentChat.type === 'group' && currentChat.id == data.groupId)
         : (currentChat && currentChat.type === 'friend' && currentChat.id == fileFromId);
       if (isFileCurrentChat) {
-        appendMessageToDOM(fileMsg);
-        scrollToBottom();
+        if (fileInsertedAt === messageCache[fileKey].length - 1) {
+          appendMessageToDOM(fileMsg);
+          scrollToBottom();
+        } else {
+          renderMessages();
+        }
       } else {
         unreadCounts[fileKey] = (unreadCounts[fileKey] || 0) + 1;
         if (data.groupId) renderGroupList(); else renderFriendList();
@@ -2794,7 +2955,7 @@ async function uploadFile(file) {
         fileSize: result.size || file.size,
         timestamp: Date.now()
       };
-      messageCache[key].push(localMsg);
+      insertMessageSorted(messageCache[key], localMsg);
       appendMessageToDOM(localMsg);
       scrollToBottom();
     } else {

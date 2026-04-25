@@ -83,6 +83,32 @@ inline std::string generateMsgId() {
 }
 
 /**
+ * @brief 计算同一会话的路由 key（用于一致性 hash 路由到同一 Logic 实例）
+ *
+ * 设计目的：保证同会话内消息严格有序。
+ * - 私聊 (A↔B)：用 (min(A,B) << 32) | max(A,B) 作为 key，方向无关
+ * - 群聊：用 groupId 作为 key
+ *
+ * 多 Logic 实例环境下（Plan B Phase 1.2 完成后），消息按 routingKey % N
+ * 路由到固定 Logic 实例处理，该实例内单线程串行入库，保证同会话有序。
+ *
+ * 当前单实例下此函数仅作占位，调用时返回有效 key 但路由无意义。
+ *
+ * @param userIdA 私聊一端 userId（任意端皆可）
+ * @param userIdB 私聊另一端 userId
+ * @return 64-bit 路由 key
+ */
+inline int64_t privateRoutingKey(int64_t userIdA, int64_t userIdB) {
+    int64_t lo = std::min(userIdA, userIdB);
+    int64_t hi = std::max(userIdA, userIdB);
+    return (lo << 32) | (hi & 0xFFFFFFFFLL);
+}
+
+inline int64_t groupRoutingKey(int64_t groupId) {
+    return groupId;
+}
+
+/**
  * @brief 生成服务端主导的 Snowflake 消息 ID（时间有序，支持多实例）
  *
  * 相比 UUID v4：
