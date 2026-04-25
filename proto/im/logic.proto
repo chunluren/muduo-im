@@ -1,0 +1,104 @@
+syntax = "proto3";
+
+package im;
+
+import "im/common.proto";
+
+option cc_enable_arenas = true;
+option go_package = "github.com/chunluren/muduo-im/proto/im;im";
+
+// LogicService：业务层暴露给 Gateway
+//
+// 调用方向：gateway → logic
+// 通信模型：
+//   - HandleMessage         unary       — 转发一条 ws 消息（msg / typing / ack ...）
+//   - HandleAuth            unary       — 鉴权 token，返回 ClientIdentity（gateway 鉴权时调）
+//   - PushToGateway         server-stream(reverse) — 在 RegisterGateway 中复用，见下
+//   - RegisterGateway       bidi-stream — 长连：gateway 上线注册 + logic 反向推送
+service LogicService {
+  // 同步业务请求
+  rpc HandleMessage(MessageRequest) returns (MessageResponse);
+
+  // 鉴权：JWT → ClientIdentity（也可在 gateway 自己做，这里留给重型鉴权）
+  rpc HandleAuth(AuthRequest) returns (AuthResponse);
+
+  // Gateway 注册并接收 logic 推送（双向流）
+  // gateway → logic: GatewayEvent（连接/断开/心跳/上行消息）
+  // logic   → gateway: PushCommand（下行推送 / 踢出 / 通知）
+  rpc RegisterGateway(stream GatewayEvent) returns (stream PushCommand);
+}
+
+// ---------- HandleMessage ----------
+
+message MessageRequest {
+  Envelope        env       = 1;
+  ClientIdentity  who       = 2;
+  // 原始 ws JSON payload（type=msg/typing/recall/edit/...），保留 logic 灵活解析
+  string          payload   = 3;
+}
+
+message MessageResponse {
+  Status   status      = 1;
+  // 可选：服务端生成的 server_msg_id（雪花 ID）回带给 gateway 写 ack 帧
+  int64    server_msg_id = 2;
+  // 可选：logic 想让 gateway 立刻回客户端的 JSON（如 ack）
+  string   inline_reply  = 3;
+}
+
+// ---------- HandleAuth ----------
+
+message AuthRequest {
+  Envelope env       = 1;
+  string   token     = 2;
+  string   device_id = 3;
+  string   remote_ip = 4;
+}
+
+message AuthResponse {
+  Status         status = 1;
+  ClientIdentity who    = 2;
+  int64          token_exp_ts = 3;  // 秒
+}
+
+// ---------- RegisterGateway 流 ----------
+
+// gateway → logic
+message GatewayEvent {
+  Envelope env = 1;
+
+  oneof kind {
+    GatewayHello        hello        = 2;   // 流第一帧
+    ConnectionOpened    conn_open    = 3;
+    ConnectionClosed    conn_close   = 4;
+    UpstreamMessage     up_msg       = 5;   // 客户端 ws 消息上行
+    Heartbeat           heartbeat    = 6;
+  }
+}
+
+message GatewayHello {
+  string instance_id  = 1;
+  string version      = 2;
+  uint32 capabilities = 3;  // bitfield 预留
+}
+
+message ConnectionOpened  { ClientIdentity who = 1; }
+message ConnectionClosed  { ClientIdentity who = 1; string reason = 2; }
+message UpstreamMessage   { ClientIdentity who = 1; string payload = 2; }
+message Heartbeat         { int64 ts_ms = 1; uint32 conn_count = 2; }
+
+// logic → gateway
+message PushCommand {
+  Envelope env = 1;
+
+  oneof kind {
+    PushToConn       push_conn   = 2;     // 推到 gateway 内某连接
+    PushToUser       push_user   = 3;     // 推到 gateway 内某 uid 的所有连接
+    KickConn         kick        = 4;     // 强制断开
+    PingPong         pong        = 5;
+  }
+}
+
+message PushToConn { string conn_id = 1; string payload = 2; }
+message PushToUser { int64  uid = 1; string device_id_filter = 2; string payload = 3; }
+message KickConn   { string conn_id = 1; string reason = 2; }
+message PingPong   { int64 ts_ms = 1; }
