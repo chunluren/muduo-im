@@ -737,12 +737,46 @@ private:
                 ofs.write(part.data.data(), part.data.size());
                 ofs.close();
 
-                resp.setJson(json({
+                // Phase 4.2：图片上传后异步生成缩略图
+                // 推 Redis 队列让 Python worker 处理（不阻塞主流程）
+                static const std::vector<std::string> imageExts = {
+                    ".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp"
+                };
+                bool isImage = false;
+                for (auto& ie : imageExts) {
+                    if (lowerExt == ie) { isImage = true; break; }
+                }
+                if (isImage && redisPool_) {
+                    auto rconn = redisPool_->acquire(500);
+                    if (rconn && rconn->valid()) {
+                        json job = {
+                            {"saved_name", savedName},
+                            {"original_path", filepath},
+                            {"sizes", json::array({200, 600})}
+                        };
+                        rconn->lpush("thumb_queue", job.dump());
+                        redisPool_->release(std::move(rconn));
+                    }
+                }
+
+                json result = {
                     {"success", true},
                     {"url", "/uploads/" + savedName},
                     {"filename", part.filename},
                     {"size", part.data.size()}
-                }).dump());
+                };
+                if (isImage) {
+                    // 提示前端：缩略图 URL（约定路径，worker 异步生成）
+                    // 前端可选：先尝试 thumb，404 时回退原图
+                    auto baseDot = savedName.rfind('.');
+                    std::string base = (baseDot == std::string::npos)
+                        ? savedName : savedName.substr(0, baseDot);
+                    std::string ex = (baseDot == std::string::npos)
+                        ? "" : savedName.substr(baseDot);
+                    result["thumb_200"] = "/uploads/" + base + "_thumb_200" + ex;
+                    result["thumb_600"] = "/uploads/" + base + "_thumb_600" + ex;
+                }
+                resp.setJson(result.dump());
                 return;
             }
         }

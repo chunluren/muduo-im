@@ -2575,7 +2575,10 @@ function appendMessageToDOM(msg) {
     const fnLower = fname.toLowerCase();
     const isImage = /\.(jpg|jpeg|png|gif|webp)$/.test(fnLower);
     if (isImage) {
-      bubbleContent = `<img class="chat-image-preview" src="${escapeHtml(msg.fileUrl)}" alt="${escapeHtml(fname)}" onclick="openImageLightbox('${escapeHtml(msg.fileUrl)}')">`;
+      // Phase 4.2：优先用 600 缩略图，加载失败回退原图（worker 异步生成会延迟可用）
+      const orig = escapeHtml(msg.fileUrl);
+      const thumb = msg.fileUrl.replace(/(\.[^.]+)$/, '_thumb_600$1');
+      bubbleContent = `<img class="chat-image-preview" src="${escapeHtml(thumb)}" alt="${escapeHtml(fname)}" onclick="openImageLightbox('${orig}')" onerror="this.onerror=null;this.src='${orig}';">`;
     } else {
       const fsize = msg.fileSize ? formatFileSize(msg.fileSize) : '';
       bubbleContent = `<a class="file-msg-link" href="${escapeHtml(msg.fileUrl)}" target="_blank" download>
