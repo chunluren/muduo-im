@@ -55,8 +55,9 @@ int main(int argc, char* argv[]) {
     dbCfg.maxSize  = config.getInt("mysql.pool_max", 10);
     auto db = std::make_shared<MySQLPool>(dbCfg);
     auto msgSvc = std::make_shared<MessageService>(db);
+    auto registry = std::make_shared<GatewayRegistry>();
 
-    LogicServiceImpl service(msgSvc);
+    LogicServiceImpl service(msgSvc, registry);
     grpc::ServerBuilder builder;
     builder.AddListeningPort(addr, grpc::InsecureServerCredentials());
     builder.RegisterService(&service);

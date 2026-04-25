@@ -1,14 +1,9 @@
 /**
  * @file gateway/main.cpp
- * @brief muduo-im-gateway 接入层进程（Phase 1.2 W2.D1-D3 骨架）
+ * @brief muduo-im-gateway 接入层进程（Phase 1.2 W2.D1-D5）
  *
- * 默认 ws 监听 0.0.0.0:9091；每条 ws 消息通过 gRPC unary 转给 logic（默认
- * 127.0.0.1:9100），把 logic 的 inline_reply 写回客户端。
- *
- * 简化（W2.D5 起补）：
- *   - 不做 JWT，path query ?uid=&device= 直接拿
- *   - 不做 logic 反向流，所以 logic 主动推送的消息（来自其他用户）暂时收不到
- *   - 单 logic 实例写死地址；W3 起接 RegistryService 做一致性 hash
+ * 监听 ws，把上行消息走 gRPC unary 转 logic；同时维持一条 RegisterGateway 双向流，
+ * 接 logic 的 PushCommand 反向推送给本地 ws session。
  */
 #include "LogicClient.h"
 #include "common/Logging.h"
@@ -17,6 +12,10 @@
 #include <atomic>
 #include <cstdlib>
 #include <iostream>
+#include <map>
+#include <mutex>
+#include <random>
+#include <set>
 #include <signal.h>
 #include <string>
 
@@ -45,6 +44,41 @@ static std::map<std::string, std::string> parseQuery(const std::string& path) {
     return kv;
 }
 
+// 本地 uid → 一组 ws session（多 device 同 gateway）
+class LocalPresence {
+public:
+    void add(int64_t uid, WsSessionPtr session) {
+        std::lock_guard<std::mutex> lk(mu_);
+        sessions_[uid].insert(session);
+    }
+    void remove(int64_t uid, const WsSessionPtr& session) {
+        std::lock_guard<std::mutex> lk(mu_);
+        auto it = sessions_.find(uid);
+        if (it == sessions_.end()) return;
+        it->second.erase(session);
+        if (it->second.empty()) sessions_.erase(it);
+    }
+    /// 返回 false 表示本地无该 uid
+    bool sendToUser(int64_t uid, const std::string& payload) {
+        std::lock_guard<std::mutex> lk(mu_);
+        auto it = sessions_.find(uid);
+        if (it == sessions_.end()) return false;
+        for (auto& s : it->second) s->sendText(payload);
+        return true;
+    }
+private:
+    std::mutex mu_;
+    std::map<int64_t, std::set<WsSessionPtr>> sessions_;
+};
+
+static std::string makeGatewayId() {
+    if (const char* e = std::getenv("MUDUO_IM_GATEWAY_ID")) return e;
+    std::random_device rd;
+    std::mt19937 g(rd());
+    std::uniform_int_distribution<int> d(1000, 9999);
+    return "gw-" + std::to_string(d(g));
+}
+
 int main(int argc, char* argv[]) {
     signal(SIGINT, onSignal);
     signal(SIGTERM, onSignal);
@@ -58,7 +92,16 @@ int main(int argc, char* argv[]) {
     if (argc > 1) wsPort = (uint16_t)std::atoi(argv[1]);
     if (argc > 2) logicAddr = argv[2];
 
-    LogicClient logic(logicAddr);
+    std::string gatewayId = makeGatewayId();
+    LogicClient logic(logicAddr, gatewayId);
+    LocalPresence presence;
+
+    logic.setPushCallback([&presence](int64_t uid, const std::string& payload) {
+        bool ok = presence.sendToUser(uid, payload);
+        std::cerr << "[gateway] push uid=" << uid
+                  << (ok ? " delivered" : " no_local_session") << "\n";
+    });
+    logic.start();
 
     EventLoop loop;
     g_loop = &loop;
@@ -78,13 +121,16 @@ int main(int argc, char* argv[]) {
             return it != kv.end() && std::atoll(it->second.c_str()) > 0;
         });
 
-    wsServer.setConnectionHandler([](const WsSessionPtr& session) {
+    wsServer.setConnectionHandler([&logic, &presence](const WsSessionPtr& session) {
         std::string path = session->getContext("path");
         auto kv = parseQuery(path);
-        std::string uid = kv.count("uid") ? kv["uid"] : "0";
-        std::string dev = kv.count("device") ? kv["device"] : "default";
-        session->setContext("uid", uid);
+        std::string uidStr = kv.count("uid") ? kv["uid"] : "0";
+        std::string dev    = kv.count("device") ? kv["device"] : "default";
+        int64_t uid = std::atoll(uidStr.c_str());
+        session->setContext("uid", uidStr);
         session->setContext("device", dev);
+        presence.add(uid, session);
+        logic.notifyConnOpen(uid, dev);
         std::cerr << "[gateway] open uid=" << uid << " dev=" << dev << "\n";
     });
 
@@ -95,7 +141,6 @@ int main(int argc, char* argv[]) {
         std::string uidStr = session->getContext("uid", "0");
         std::string dev    = session->getContext("device", "default");
         int64_t uid = std::atoll(uidStr.c_str());
-        // 用本次请求序号作为 conn_id 后缀（生产应当用 muduo conn 唯一 id）
         std::string connId = "g-" + uidStr + "-" + std::to_string(reqCount.fetch_add(1));
 
         std::string reply;
@@ -109,16 +154,24 @@ int main(int argc, char* argv[]) {
         if (!reply.empty()) session->sendText(reply);
     });
 
-    wsServer.setCloseHandler([](const WsSessionPtr& session) {
-        std::cerr << "[gateway] close uid=" << session->getContext("uid", "0") << "\n";
+    wsServer.setCloseHandler([&logic, &presence](const WsSessionPtr& session) {
+        std::string uidStr = session->getContext("uid", "0");
+        std::string dev    = session->getContext("device", "default");
+        int64_t uid = std::atoll(uidStr.c_str());
+        presence.remove(uid, session);
+        logic.notifyConnClose(uid, dev);
+        std::cerr << "[gateway] close uid=" << uid << "\n";
     });
 
     wsServer.start();
-    std::cout << "muduo-im-gateway: ws=" << wsAddr << ":" << wsPort
+    std::cout << "muduo-im-gateway: id=" << gatewayId
+              << " ws=" << wsAddr << ":" << wsPort
               << " logic=" << logicAddr << std::endl;
     LOG_EVENT("gateway_start",
-              "ws_port=" + std::to_string(wsPort) + " logic=" + logicAddr);
+              "id=" + gatewayId + " ws_port=" + std::to_string(wsPort) +
+              " logic=" + logicAddr);
 
     loop.loop();
+    logic.stop();
     return 0;
 }
