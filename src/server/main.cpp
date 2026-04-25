@@ -159,6 +159,18 @@ int main(int argc, char* argv[]) {
         }
     }
 
+    // Phase 1.3 跨实例消息路由（Redis Pub/Sub）
+    {
+        std::string instanceId = config.get("instance.id", "instance-0");
+        const char* envInst = std::getenv("MUDUO_IM_INSTANCE_ID");
+        if (envInst && *envInst) instanceId = envInst;
+        bool routerEnabled = config.getInt("instance.router_enabled", 1) > 0;
+        if (routerEnabled) {
+            std::cerr << "Cross-instance router enabled: instance_id=" << instanceId << std::endl;
+            server.enableInstanceRouter(redisConfig.host, redisConfig.port, instanceId);
+        }
+    }
+
     server.start();
 
     std::cout << "=== muduo-im ===" << std::endl;
