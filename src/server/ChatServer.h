@@ -284,6 +284,11 @@ private:
 
         // ---- File upload ----
         httpServer_.POST("/api/upload", [this](const HttpRequest& req, HttpResponse& resp) { handleUpload(req, resp); });
+        // Phase 4.3 断点续传分片 API
+        httpServer_.POST("/api/upload/init",     [this](const HttpRequest& req, HttpResponse& resp) { handleUploadInit(req, resp); });
+        httpServer_.POST("/api/upload/chunk",    [this](const HttpRequest& req, HttpResponse& resp) { handleUploadChunk(req, resp); });
+        httpServer_.GET ("/api/upload/status",   [this](const HttpRequest& req, HttpResponse& resp) { handleUploadStatus(req, resp); });
+        httpServer_.POST("/api/upload/complete", [this](const HttpRequest& req, HttpResponse& resp) { handleUploadComplete(req, resp); });
         httpServer_.serveStatic("/uploads", "../uploads");
 
         // ---- Health Check ----
@@ -670,6 +675,336 @@ private:
     }
 
     // ==================== Route Handlers: Upload ====================
+
+    // ==================== Chunked Upload (Phase 4.3) ====================
+    // 断点续传 4 段式 API：
+    //   POST /api/upload/init     初始化（拿 upload_id + chunk_size）
+    //   POST /api/upload/chunk    上传单个分片（query: upload_id, index）
+    //   GET  /api/upload/status   查询已上传分片（用于恢复）
+    //   POST /api/upload/complete 合并分片，返回最终 URL
+    //
+    // 服务端状态：Redis HASH `upload:{upload_id}` 存元数据 + bitmap
+    //   字段：file_name / total_size / chunk_size / total_chunks / uid / created_at / received（base64 bitmap）
+    //   分片落盘：/tmp/upload/{upload_id}/chunk_{N}
+    //   24 小时未完成 cron 清理（建议另起；这里仅 init 时设 Redis TTL）
+
+    static constexpr size_t kChunkSize = 1024 * 1024;   // 1 MB / chunk
+    static constexpr size_t kMaxFileSize = 50 * 1024 * 1024;  // 与 handleUpload 一致
+
+    /// POST /api/upload/init  body: {file_name, total_size, sha256?}
+    /// 返回: {success, upload_id, chunk_size, total_chunks}
+    void handleUploadInit(const HttpRequest& req, HttpResponse& resp) {
+        int64_t userId = requireAuth(req, resp);
+        if (userId < 0) return;
+        json j;
+        if (!parseJsonBody(req, resp, j)) return;
+
+        std::string fileName = j.value("file_name", "");
+        int64_t totalSize = j.value("total_size", (int64_t)0);
+        if (fileName.empty() || totalSize <= 0 || totalSize > (int64_t)kMaxFileSize) {
+            resp = HttpResponse::badRequest("invalid file_name / total_size");
+            return;
+        }
+
+        // 类型白名单（与 handleUpload 一致）
+        std::string ext;
+        auto dotPos = fileName.rfind('.');
+        if (dotPos != std::string::npos) ext = fileName.substr(dotPos);
+        std::string lowerExt = ext;
+        std::transform(lowerExt.begin(), lowerExt.end(), lowerExt.begin(), ::tolower);
+        static const std::vector<std::string> allowedExts = {
+            ".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp",
+            ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
+            ".txt", ".md", ".zip", ".rar", ".7z",
+            ".mp3", ".mp4", ".wav", ".avi", ".mov"
+        };
+        bool allowed = lowerExt.empty();
+        for (auto& ae : allowedExts) {
+            if (lowerExt == ae) { allowed = true; break; }
+        }
+        if (!allowed) {
+            resp = HttpResponse::badRequest("file type not allowed");
+            return;
+        }
+
+        std::string uploadId = Protocol::generateMsgId();
+        int64_t totalChunks = (totalSize + kChunkSize - 1) / kChunkSize;
+
+        // 创建临时分片目录
+        std::string dir = "/tmp/muduo-im-upload/" + uploadId;
+        ::mkdir("/tmp/muduo-im-upload", 0755);
+        if (::mkdir(dir.c_str(), 0755) != 0) {
+            resp = HttpResponse::serverError("mkdir failed");
+            return;
+        }
+
+        // Redis 存元数据，TTL 24h
+        if (redisPool_) {
+            auto rconn = redisPool_->acquire(1000);
+            if (rconn && rconn->valid()) {
+                json meta = {
+                    {"file_name", fileName},
+                    {"total_size", totalSize},
+                    {"chunk_size", kChunkSize},
+                    {"total_chunks", totalChunks},
+                    {"ext", ext},
+                    {"uid", userId},
+                    {"created_at", Protocol::nowMs()},
+                    {"received", json::array()}  // 已收到分片索引数组
+                };
+                rconn->set("upload:" + uploadId, meta.dump(), 86400);
+                redisPool_->release(std::move(rconn));
+            }
+        }
+
+        resp.setJson(json({
+            {"success", true},
+            {"upload_id", uploadId},
+            {"chunk_size", (int64_t)kChunkSize},
+            {"total_chunks", totalChunks}
+        }).dump());
+    }
+
+    /// POST /api/upload/chunk?upload_id=X&index=N  body: 二进制分片
+    void handleUploadChunk(const HttpRequest& req, HttpResponse& resp) {
+        int64_t userId = requireAuth(req, resp);
+        if (userId < 0) return;
+
+        std::string uploadId = req.getParam("upload_id", "");
+        std::string idxStr = req.getParam("index", "");
+        if (uploadId.empty() || idxStr.empty()) {
+            resp = HttpResponse::badRequest("missing upload_id or index");
+            return;
+        }
+        int idx = -1;
+        try { idx = std::stoi(idxStr); } catch (...) {}
+        if (idx < 0) {
+            resp = HttpResponse::badRequest("invalid index");
+            return;
+        }
+
+        // 拉元数据校验
+        std::string metaJson;
+        if (redisPool_) {
+            auto rconn = redisPool_->acquire(1000);
+            if (rconn && rconn->valid()) {
+                metaJson = rconn->get("upload:" + uploadId);
+                redisPool_->release(std::move(rconn));
+            }
+        }
+        if (metaJson.empty()) {
+            resp = HttpResponse::badRequest("upload_id not found or expired");
+            return;
+        }
+        json meta = json::parse(metaJson, nullptr, false);
+        if (meta.is_discarded()) {
+            resp = HttpResponse::serverError("meta corrupt");
+            return;
+        }
+        if (meta.value("uid", (int64_t)0) != userId) {
+            resp.setStatusCode(HttpStatusCode::FORBIDDEN);
+            resp.setText("not your upload");
+            return;
+        }
+        int64_t totalChunks = meta.value("total_chunks", (int64_t)0);
+        if (idx >= totalChunks) {
+            resp = HttpResponse::badRequest("index out of range");
+            return;
+        }
+        if (req.body.size() > kChunkSize) {
+            resp = HttpResponse::badRequest("chunk too large");
+            return;
+        }
+
+        // 写分片文件
+        std::string chunkPath = "/tmp/muduo-im-upload/" + uploadId
+                                 + "/chunk_" + std::to_string(idx);
+        std::ofstream ofs(chunkPath, std::ios::binary);
+        if (!ofs) {
+            resp = HttpResponse::serverError("write chunk failed");
+            return;
+        }
+        ofs.write(req.body.data(), req.body.size());
+        ofs.close();
+
+        // 更新 received 数组（去重，简化用 array）
+        auto& recv = meta["received"];
+        bool exists = false;
+        for (auto& v : recv) {
+            if (v.is_number_integer() && v.get<int>() == idx) { exists = true; break; }
+        }
+        if (!exists) recv.push_back(idx);
+
+        if (redisPool_) {
+            auto rconn = redisPool_->acquire(1000);
+            if (rconn && rconn->valid()) {
+                rconn->set("upload:" + uploadId, meta.dump(), 86400);
+                redisPool_->release(std::move(rconn));
+            }
+        }
+
+        resp.setJson(json({
+            {"success", true},
+            {"index", idx},
+            {"received_count", (int)recv.size()},
+            {"total_chunks", totalChunks}
+        }).dump());
+    }
+
+    /// GET /api/upload/status?upload_id=X
+    void handleUploadStatus(const HttpRequest& req, HttpResponse& resp) {
+        int64_t userId = requireAuth(req, resp);
+        if (userId < 0) return;
+        std::string uploadId = req.getParam("upload_id", "");
+        if (uploadId.empty()) {
+            resp = HttpResponse::badRequest("missing upload_id");
+            return;
+        }
+        std::string metaJson;
+        if (redisPool_) {
+            auto rconn = redisPool_->acquire(1000);
+            if (rconn && rconn->valid()) {
+                metaJson = rconn->get("upload:" + uploadId);
+                redisPool_->release(std::move(rconn));
+            }
+        }
+        if (metaJson.empty()) {
+            resp.setStatusCode(HttpStatusCode::NOT_FOUND);
+            resp.setText("upload not found or expired");
+            return;
+        }
+        json meta = json::parse(metaJson, nullptr, false);
+        if (meta.is_discarded() || meta.value("uid", (int64_t)0) != userId) {
+            resp.setStatusCode(HttpStatusCode::FORBIDDEN);
+            resp.setText("not your upload");
+            return;
+        }
+        resp.setJson(json({
+            {"success", true},
+            {"received_chunks", meta.value("received", json::array())},
+            {"total_chunks", meta.value("total_chunks", (int64_t)0)},
+            {"file_name", meta.value("file_name", "")}
+        }).dump());
+    }
+
+    /// POST /api/upload/complete  body: {upload_id}
+    /// 合并所有分片 → 最终文件 → 返回 URL（兼容现有 file_msg 协议）
+    void handleUploadComplete(const HttpRequest& req, HttpResponse& resp) {
+        int64_t userId = requireAuth(req, resp);
+        if (userId < 0) return;
+        json j;
+        if (!parseJsonBody(req, resp, j)) return;
+        std::string uploadId = j.value("upload_id", "");
+        if (uploadId.empty()) {
+            resp = HttpResponse::badRequest("missing upload_id");
+            return;
+        }
+
+        std::string metaJson;
+        if (redisPool_) {
+            auto rconn = redisPool_->acquire(1000);
+            if (rconn && rconn->valid()) {
+                metaJson = rconn->get("upload:" + uploadId);
+                redisPool_->release(std::move(rconn));
+            }
+        }
+        if (metaJson.empty()) {
+            resp = HttpResponse::badRequest("upload_id not found");
+            return;
+        }
+        json meta = json::parse(metaJson, nullptr, false);
+        if (meta.is_discarded() || meta.value("uid", (int64_t)0) != userId) {
+            resp.setStatusCode(HttpStatusCode::FORBIDDEN);
+            resp.setText("not your upload");
+            return;
+        }
+        int64_t totalChunks = meta.value("total_chunks", (int64_t)0);
+        auto& recv = meta["received"];
+        if ((int64_t)recv.size() != totalChunks) {
+            resp = HttpResponse::badRequest("not all chunks received");
+            return;
+        }
+
+        std::string ext = meta.value("ext", "");
+        std::string finalName = uploadId + ext;
+        ::mkdir("../uploads", 0755);
+        std::string finalPath = "../uploads/" + finalName;
+
+        // 合并分片
+        std::ofstream out(finalPath, std::ios::binary);
+        if (!out) {
+            resp = HttpResponse::serverError("create final failed");
+            return;
+        }
+        for (int64_t i = 0; i < totalChunks; ++i) {
+            std::string cp = "/tmp/muduo-im-upload/" + uploadId
+                              + "/chunk_" + std::to_string(i);
+            std::ifstream in(cp, std::ios::binary);
+            if (!in) {
+                out.close();
+                ::unlink(finalPath.c_str());
+                resp = HttpResponse::serverError("missing chunk " + std::to_string(i));
+                return;
+            }
+            out << in.rdbuf();
+            in.close();
+        }
+        out.close();
+
+        // 清理临时分片
+        for (int64_t i = 0; i < totalChunks; ++i) {
+            std::string cp = "/tmp/muduo-im-upload/" + uploadId
+                              + "/chunk_" + std::to_string(i);
+            ::unlink(cp.c_str());
+        }
+        ::rmdir(("/tmp/muduo-im-upload/" + uploadId).c_str());
+
+        // Redis 标记完成（保留元数据 1 小时方便 status 查询）
+        if (redisPool_) {
+            auto rconn = redisPool_->acquire(1000);
+            if (rconn && rconn->valid()) {
+                meta["completed"] = true;
+                rconn->set("upload:" + uploadId, meta.dump(), 3600);
+                redisPool_->release(std::move(rconn));
+            }
+        }
+
+        // 触发缩略图（同 handleUpload）
+        std::string lowerExt = ext;
+        std::transform(lowerExt.begin(), lowerExt.end(), lowerExt.begin(), ::tolower);
+        static const std::vector<std::string> imageExts = {
+            ".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp"
+        };
+        bool isImage = false;
+        for (auto& ie : imageExts) {
+            if (lowerExt == ie) { isImage = true; break; }
+        }
+        if (isImage && redisPool_) {
+            auto rconn = redisPool_->acquire(500);
+            if (rconn && rconn->valid()) {
+                json job = {
+                    {"saved_name", finalName},
+                    {"original_path", finalPath},
+                    {"sizes", json::array({200, 600})}
+                };
+                rconn->lpush("thumb_queue", job.dump());
+                redisPool_->release(std::move(rconn));
+            }
+        }
+
+        json result = {
+            {"success", true},
+            {"url", "/uploads/" + finalName},
+            {"filename", meta.value("file_name", "")},
+            {"size", meta.value("total_size", (int64_t)0)}
+        };
+        if (isImage) {
+            std::string base = uploadId;
+            result["thumb_200"] = "/uploads/" + base + "_thumb_200" + ext;
+            result["thumb_600"] = "/uploads/" + base + "_thumb_600" + ext;
+        }
+        resp.setJson(result.dump());
+    }
 
     void handleUpload(const HttpRequest& req, HttpResponse& resp) {
         int64_t userId = requireAuth(req, resp);
