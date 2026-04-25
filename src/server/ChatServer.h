@@ -36,6 +36,8 @@
 #include "server/DeviceService.h"
 #include "server/PushService.h"
 #include "moderation/ContentModerationService.h"
+#include "server/InstanceRouter.h"
+#include <set>
 #include "http/HttpServer.h"
 #include "http/MultipartParser.h"
 #include "websocket/WebSocketServer.h"
@@ -124,6 +126,37 @@ public:
      * @brief 配置 ElasticSearch 集群（Phase 4.4）
      * @param nodes ES 节点列表 ["host:port", ...]；空列表关闭 ES 走 MySQL 降级
      */
+    /**
+     * @brief 启用跨实例路由（Phase 1.3）
+     * @param redisHost  Redis 地址
+     * @param redisPort  Redis 端口
+     * @param instanceId 本实例 ID（与 OnlineManager 的 instance_id 一致）
+     */
+    void enableInstanceRouter(const std::string& redisHost, int redisPort,
+                                 const std::string& instanceId) {
+        instanceRouter_ = std::make_unique<InstanceRouter>(
+            redisHost, redisPort, instanceId);
+        instanceRouter_->setDeliverCallback(
+            [this](int64_t, const std::string&, const std::string& payload) {
+                // 接收到跨实例消息：解析 payload 找 target uid，本地 broadcastToUser
+                json j = json::parse(payload, nullptr, false);
+                if (j.is_discarded()) return;
+                std::string toStr = j.value("to", "");
+                if (toStr.empty()) toStr = j.value("targetUid", "");
+                if (toStr.empty()) return;
+                int64_t target = 0;
+                try { target = std::stoll(toStr); } catch (...) { return; }
+                broadcastToUser(target, payload);
+            });
+        instanceRouter_->start();
+    }
+
+    /// 私聊推送时如本地无在线 session，尝试跨实例 publish
+    int tryCrossInstanceBroadcast(int64_t uid, const std::string& payload) {
+        if (!instanceRouter_) return 0;
+        return instanceRouter_->publishToUser(uid, payload);
+    }
+
     /**
      * @brief 配置归档查询服务地址（Phase 5.3）
      * @param host  archive_query_server host（一般 127.0.0.1）
@@ -1557,15 +1590,19 @@ private:
         }
 
         if (delivered == 0) {
-            // Recipient offline: increment unread count + 触发离线推送（Phase 5.1）
-            incrementUnread(toUserId, fromUserId);
-            if (pushService_) {
-                pushService_->notifyOffline(
-                    toUserId,
-                    "新消息",  // 隐私优先：title 不带发送者名
-                    content.size() > 50 ? content.substr(0, 50) + "..." : content,
-                    json({{"msgId", msgId}, {"from", std::to_string(fromUserId)},
-                          {"convType", "private"}}));
+            // Phase 1.3: 本地无 session → 尝试跨实例路由
+            int crossDelivered = tryCrossInstanceBroadcast(toUserId, fwd.dump());
+            if (crossDelivered == 0) {
+                // 真正离线：incr unread + 触发离线推送
+                incrementUnread(toUserId, fromUserId);
+                if (pushService_) {
+                    pushService_->notifyOffline(
+                        toUserId,
+                        "新消息",
+                        content.size() > 50 ? content.substr(0, 50) + "..." : content,
+                        json({{"msgId", msgId}, {"from", std::to_string(fromUserId)},
+                              {"convType", "private"}}));
+                }
             }
         }
     }
@@ -2226,6 +2263,7 @@ private:
     std::shared_ptr<DeviceService> deviceService_;  ///< Phase 3.3
     std::shared_ptr<PushService> pushService_;      ///< Phase 5.1
     std::shared_ptr<ContentModerationService> moderation_;  ///< Phase 5.2
+    std::unique_ptr<InstanceRouter> instanceRouter_;        ///< Phase 1.3
     JwtRevocationService jwtRevocation_;  ///< jti 黑名单吊销服务
     std::unique_ptr<ESClient> esClient_;  ///< ES 客户端（Phase 4.4）；nullptr=未启用
 
