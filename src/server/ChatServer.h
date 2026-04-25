@@ -32,6 +32,7 @@
 #include "server/GroupService.h"
 #include "server/MessageService.h"
 #include "server/JwtRevocationService.h"
+#include "server/ESClient.h"
 #include "http/HttpServer.h"
 #include "http/MultipartParser.h"
 #include "websocket/WebSocketServer.h"
@@ -108,6 +109,23 @@ public:
      * 同时注册定时任务：每 2 秒批量刷写 Redis 消息队列到 MySQL，
      * 每 10 秒刷新在线用户的 Redis TTL
      */
+    /**
+     * @brief 配置 ElasticSearch 集群（Phase 4.4）
+     * @param nodes ES 节点列表 ["host:port", ...]；空列表关闭 ES 走 MySQL 降级
+     */
+    void enableElasticsearch(const std::vector<std::string>& nodes) {
+        if (nodes.empty()) {
+            esClient_.reset();
+            return;
+        }
+        esClient_ = std::make_unique<ESClient>(nodes);
+        // 探活（不阻塞启动；失败也允许启动，因为 search 路径有降级）
+        if (!esClient_->healthy()) {
+            std::cerr << "WARN: ES cluster not healthy at startup; search will fall back to MySQL"
+                      << std::endl;
+        }
+    }
+
     void start() {
         httpServer_.enableCors();
         httpServer_.useRateLimit(100); // 100 req/sec per IP
@@ -472,7 +490,70 @@ private:
     void handleSearchMessages(const HttpRequest& req, HttpResponse& resp) {
         int64_t userId = requireAuth(req, resp);
         if (userId < 0) return;
-        resp.setJson(messageService_.searchMessages(userId, req.getParam("keyword", "")).dump());
+        std::string keyword = req.getParam("keyword", "");
+        if (keyword.size() < 2) {
+            resp.setJson(json({{"success", false}, {"message", "keyword too short"}}).dump());
+            return;
+        }
+
+        // Phase 4.4：优先走 ES（如果已启用且健康），失败降级 MySQL LIKE
+        if (esClient_) {
+            // 构造 ES query：搜索 body 字段，限定用户参与的会话
+            // 简化：服务端不预过滤 user 参与会话（ES 索引时已带 sender_id），
+            // 由 ES filter 完成
+            json esQuery = {
+                {"size", 50},
+                {"query", {
+                    {"bool", {
+                        {"must", json::array({
+                            {{"match", {{"body", keyword}}}}
+                        })},
+                        {"filter", json::array({
+                            {{"bool", {
+                                {"should", json::array({
+                                    {{"term", {{"sender_id", userId}}}},
+                                    {{"term", {{"recipient_id", userId}}}}
+                                })},
+                                {"minimum_should_match", 1}
+                            }}}
+                        })}
+                    }}
+                }},
+                {"sort", json::array({
+                    {{"created_at", {{"order", "desc"}}}}
+                })}
+            };
+            std::string esResp = esClient_->search("messages", esQuery.dump());
+            if (!esResp.empty()) {
+                json parsed = json::parse(esResp, nullptr, false);
+                if (!parsed.is_discarded() && parsed.contains("hits")) {
+                    json messages = json::array();
+                    for (auto& hit : parsed["hits"]["hits"]) {
+                        if (!hit.contains("_source")) continue;
+                        const auto& src = hit["_source"];
+                        json m;
+                        m["msgId"] = src.value("msg_id", "");
+                        m["from"] = src.value("sender_id", (int64_t)0);
+                        m["content"] = src.value("body", "");
+                        m["timestamp"] = src.value("created_at", (int64_t)0);
+                        m["chatType"] = src.value("msg_kind", "private");
+                        if (src.contains("recipient_id")) m["to"] = src["recipient_id"];
+                        if (src.contains("group_id")) m["groupId"] = src["group_id"];
+                        messages.push_back(m);
+                    }
+                    resp.setJson(json({{"success", true},
+                                       {"source", "elasticsearch"},
+                                       {"messages", messages}}).dump());
+                    return;
+                }
+            }
+            LOG_WARN_JSON("es_search_fallback", "keyword=" + keyword);
+        }
+
+        // 降级：MySQL LIKE 全表扫
+        json fb = messageService_.searchMessages(userId, keyword);
+        if (fb.is_object()) fb["source"] = "mysql";
+        resp.setJson(fb.dump());
     }
 
     void handleGetReadStatus(const HttpRequest& req, HttpResponse& resp) {
@@ -1551,6 +1632,7 @@ private:
     OnlineManager onlineManager_;
     AuditService auditService_;
     JwtRevocationService jwtRevocation_;  ///< jti 黑名单吊销服务
+    std::unique_ptr<ESClient> esClient_;  ///< ES 客户端（Phase 4.4）；nullptr=未启用
 
     /// ChatServer 直接持有 JWT 实例以解析 jti（UserService 的 JWT 是内部使用）
     JWT jwt_;

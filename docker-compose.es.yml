@@ -1,0 +1,71 @@
+# muduo-im ES 3 节点集群（Phase 4.4）
+# 用法：docker compose -f docker-compose.es.yml up -d
+# 单机开发：docker compose -f docker-compose.es.yml up -d es-01  （只起 1 节点）
+#
+# 资源建议：每节点 8GB 内存（JVM 4GB + OS cache 4GB），SSD 500GB
+# 单机环境下 3 节点共占 12GB+，开发期可只起 es-01
+
+version: '3.8'
+
+services:
+  es-01:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.11.0
+    container_name: muduo-im-es-01
+    environment:
+      - node.name=es-01
+      - cluster.name=muduo-im-search
+      - discovery.seed_hosts=es-02,es-03
+      - cluster.initial_master_nodes=es-01,es-02,es-03
+      - bootstrap.memory_lock=true
+      - "ES_JAVA_OPTS=-Xms2g -Xmx2g"      # 开发省内存；生产改 -Xms4g -Xmx4g
+      - xpack.security.enabled=false       # 开发关闭安全；生产必须打开
+    ulimits:
+      memlock: { soft: -1, hard: -1 }
+    volumes:
+      - es01_data:/usr/share/elasticsearch/data
+    ports:
+      - "9200:9200"
+    networks: [muduo-im-es]
+
+  es-02:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.11.0
+    container_name: muduo-im-es-02
+    environment:
+      - node.name=es-02
+      - cluster.name=muduo-im-search
+      - discovery.seed_hosts=es-01,es-03
+      - cluster.initial_master_nodes=es-01,es-02,es-03
+      - bootstrap.memory_lock=true
+      - "ES_JAVA_OPTS=-Xms2g -Xmx2g"
+      - xpack.security.enabled=false
+    ulimits:
+      memlock: { soft: -1, hard: -1 }
+    volumes:
+      - es02_data:/usr/share/elasticsearch/data
+    networks: [muduo-im-es]
+
+  es-03:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.11.0
+    container_name: muduo-im-es-03
+    environment:
+      - node.name=es-03
+      - cluster.name=muduo-im-search
+      - discovery.seed_hosts=es-01,es-02
+      - cluster.initial_master_nodes=es-01,es-02,es-03
+      - bootstrap.memory_lock=true
+      - "ES_JAVA_OPTS=-Xms2g -Xmx2g"
+      - xpack.security.enabled=false
+    ulimits:
+      memlock: { soft: -1, hard: -1 }
+    volumes:
+      - es03_data:/usr/share/elasticsearch/data
+    networks: [muduo-im-es]
+
+volumes:
+  es01_data:
+  es02_data:
+  es03_data:
+
+networks:
+  muduo-im-es:
+    driver: bridge

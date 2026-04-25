@@ -128,6 +128,28 @@ int main(int argc, char* argv[]) {
     // ---- 创建并启动 ChatServer ----
     ChatServer server(&loop, httpPort, wsPort, mysqlConfig, redisConfig, jwtSecret);
     g_server = &server;  // 注册给信号处理函数，用于优雅关闭
+
+    // Phase 4.4：从配置读 ES 节点列表（逗号分隔），未配置则关闭 ES（走 MySQL）
+    {
+        std::string esNodesCsv = config.get("search.es_nodes", "");
+        std::vector<std::string> esNodes;
+        size_t p = 0;
+        while (p < esNodesCsv.size()) {
+            size_t comma = esNodesCsv.find(',', p);
+            if (comma == std::string::npos) comma = esNodesCsv.size();
+            std::string node = esNodesCsv.substr(p, comma - p);
+            // trim
+            while (!node.empty() && std::isspace(node.front())) node.erase(0, 1);
+            while (!node.empty() && std::isspace(node.back())) node.pop_back();
+            if (!node.empty()) esNodes.push_back(node);
+            p = comma + 1;
+        }
+        if (!esNodes.empty()) {
+            std::cerr << "ES enabled: " << esNodes.size() << " node(s)" << std::endl;
+            server.enableElasticsearch(esNodes);
+        }
+    }
+
     server.start();
 
     std::cout << "=== muduo-im ===" << std::endl;
