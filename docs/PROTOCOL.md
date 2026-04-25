@@ -116,14 +116,14 @@ ws://host:9090/ws?token=<JWT>
 | `edit` | C↔S | 消息编辑（15 分钟内） | ✅ |
 | `reaction` | C→S | 切换 emoji 表情反应 | ✅ |
 | `reaction_update` | S→C | 反应字典变化推送 | ✅ |
+| `delivered` | S→C | 消息已送达对端（双向 ACK） | ✅ |
+| `client_ack` | C→S | 接收方确认收到消息 | ✅ |
 | `error` | S→C | 错误响应 | ✅ |
 
 ### 2.2 计划中（Phase 2-4）
 
 | `type` 值 | 方向 | 用途 | 关联任务 |
 |-----------|------|------|----------|
-| `delivered` | S→C | 消息送达对端的回执（双向 ACK） | #6 P2.1 |
-| `client_ack` | C→S | 接收方确认消息已送达本地 | #6 P2.1 |
 | `read_sync` | S→C | 多端已读同步 | #10 P3.2 |
 | `reaction_update` | S→C | 表情反应变化推送 | #16 P4.5 |
 | `device_kicked` | S→C | 被管理端 / 自己其他端踢下线 | #9 P3.1 |
@@ -486,6 +486,57 @@ case 'ack': {
 
 ---
 
+## 7.7 双向 ACK（client_ack / delivered · Phase 2.1）
+
+历史问题：原有 `ack` 只表示"服务端已接收"，发送方无法知道**对端**是否真的收到（接收方可能离线或 WebSocket 已断）。
+
+### 7.7.1 接收方上报（C→S）
+
+接收方收到 `msg` / `group_msg` / `file_msg` push 后，自动回发：
+
+```json
+{"type":"client_ack","msgId":"172263581197272608"}
+```
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `msgId` | string | 是 | 服务端 Snowflake msgId（由 push 给来的） |
+
+服务端处理：
+- **私聊**：`UPDATE private_messages SET delivered_at=now WHERE msg_id=? AND to_user=ackerId AND delivered_at IS NULL`（IS NULL 保证幂等）
+- **群聊**：`UPDATE group_messages SET delivered_count = delivered_count + 1 WHERE msg_id=?`（每个 ack +1）
+
+### 7.7.2 发送方收到（S→C）
+
+```json
+{
+  "type": "delivered",
+  "msgId": "172263581197272608",
+  "deliveredAt": 1745000000000,
+  "deliveredCount": 1
+}
+```
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `deliveredAt` | int64 | 首次送达时间戳（毫秒），私聊只发一次；群聊每次累计 |
+| `deliveredCount` | int | 累计已送达数（私聊=1；群聊累加，前端可显示"已送达 N"） |
+
+### 7.7.3 业务规则
+
+- **client_ack 幂等**：私聊用 `delivered_at IS NULL` 条件保证只更新一次
+- **群聊不严格去重**：每次 ack 都 +1（接受多端重复）
+- **离线消息上线后补 ACK**：客户端连接 WebSocket 后拉历史，对未 ack 的消息逐一发 client_ack
+- **消息状态优先级**：已读 > 已送达 > 未送达
+- **不向自己发 delivered**：sender == ackerId 时跳过推送
+
+### 7.7.4 实现位置
+
+- 后端：`ChatServer::handleClientAck`、`Protocol::makeDelivered`
+- 前端：`web/index.html` 内 case 'msg/group_msg/file_msg' 自动回发 `client_ack`；case 'delivered' 更新 cache + UI
+
+---
+
 ## 8. 已读回执（read_ack）
 
 ### 8.1 客户端上报（C→S）
@@ -573,19 +624,7 @@ S→C：
 
 > 这些类型未实现，本节作为设计预留，实现时回填详细字段。
 
-### 10.1 delivered（双向 ACK · 计划 #6 P2.1）
-
-服务端确认对端已收到：
-
-```json
-{"type":"delivered","msgId":"...","deliveredAt":1745000000000}
-```
-
-接收方主动 ack：
-
-```json
-{"type":"client_ack","msgId":"..."}
-```
+### 10.1 delivered / client_ack（已实现，见 §7.7）
 
 ### 10.2 read_sync（多端已读同步 · 计划 #10 P3.2）
 
@@ -617,6 +656,7 @@ S→C：
 
 | 日期 | 变更 | 关联 PR |
 |------|------|---------|
+| 2026-04-25 | 新增 `client_ack` / `delivered` 类型 — 双向 ACK | #6 |
 | 2026-04-25 | 新增 `reaction` / `reaction_update` 类型 — 表情反应 | #16 |
 | 2026-04-25 | 新增 `edit` 类型（C↔S）— 消息编辑 15 分钟时间窗 | #12 |
 | 2026-04-22 | 创建本文档；冻结 v1 协议（11 类型）；明确双 msgId 约定 | (W1 路线图) |

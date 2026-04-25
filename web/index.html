@@ -555,6 +555,9 @@ body {
 .message-read-status.read {
   color: #4A90D9;
 }
+.message-read-status.delivered {
+  color: #52c41a;
+}
 
 /* Recall button on hover */
 .message-item.own .message-bubble-wrapper {
@@ -2660,10 +2663,20 @@ function appendMessageToDOM(msg) {
   }
 
   // Read status for own messages
+  // Phase 2.1：状态优先级 已读 > 已送达 > 未送达；群聊"已送达 N"
   let readStatus = '';
-  if (isOwn && currentChat && currentChat.type === 'friend') {
-    const isRead = msg.read || false;
-    readStatus = `<div class="message-read-status ${isRead ? 'read' : ''}">${isRead ? '已读' : '未读'}</div>`;
+  if (isOwn && currentChat) {
+    if (currentChat.type === 'friend') {
+      const isRead = msg.read || false;
+      const isDelivered = !!msg.deliveredAt;
+      let label, cls;
+      if (isRead) { label = '已读'; cls = 'read'; }
+      else if (isDelivered) { label = '已送达'; cls = 'delivered'; }
+      else { label = '未送达'; cls = ''; }
+      readStatus = `<div class="message-read-status ${cls}">${label}</div>`;
+    } else if (currentChat.type === 'group' && msg.deliveredCount) {
+      readStatus = `<div class="message-read-status delivered" title="${msg.deliveredCount} 人已收到">已送达 ${msg.deliveredCount}</div>`;
+    }
   }
 
   const senderHtml = !isOwn && senderName
@@ -2821,6 +2834,11 @@ function handleWsMessage(data) {
       const msg = { msgId: data.msgId, from: fromId, to: data.to, content: data.content, replyTo: data.replyTo, timestamp: data.timestamp };
       const insertedAt = insertMessageSorted(messageCache[key], msg);
 
+      // Phase 2.1 双向 ACK：收到对端推送即回发 client_ack
+      if (data.msgId && ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'client_ack', msgId: data.msgId }));
+      }
+
       if (currentChat && currentChat.type === 'friend' && currentChat.id == fromId) {
         // 插入在末尾时直接 append；否则重 render（保证 DOM 与有序 cache 一致）
         if (insertedAt === messageCache[key].length - 1) {
@@ -2850,6 +2868,11 @@ function handleWsMessage(data) {
         mentions: Array.isArray(data.mentions) ? data.mentions : undefined
       };
       const insertedAt = insertMessageSorted(messageCache[key], msg);
+
+      // Phase 2.1 双向 ACK：群聊收到推送也回 client_ack
+      if (data.msgId && ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'client_ack', msgId: data.msgId }));
+      }
 
       if (currentChat && currentChat.type === 'group' && currentChat.id == groupId) {
         if (insertedAt === messageCache[key].length - 1) {
@@ -2928,6 +2951,10 @@ function handleWsMessage(data) {
       // Skip own file messages echoed back (already displayed locally)
       if (data.from == userId && !data.groupId) break;
       if (data.from == userId && data.groupId) break;
+      // Phase 2.1 双向 ACK：文件消息也回 client_ack
+      if (data.msgId && ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'client_ack', msgId: data.msgId }));
+      }
       const fileMsg = {
         msgId: data.msgId,
         from: fileFromId,
@@ -2954,6 +2981,27 @@ function handleWsMessage(data) {
         unreadCounts[fileKey] = (unreadCounts[fileKey] || 0) + 1;
         if (data.groupId) renderGroupList(); else renderFriendList();
       }
+      break;
+    }
+    case 'delivered': {
+      // Phase 2.1 双向 ACK: 服务端通知发送方"消息已送达对端"
+      // 私聊 deliveredCount=1；群聊累加（前端可显示"已送达 N"）
+      const dMsgId = data.msgId;
+      const deliveredAt = data.deliveredAt;
+      const cnt = data.deliveredCount || 1;
+      for (const key in messageCache) {
+        const msgs = messageCache[key];
+        for (const m of msgs) {
+          if (m.msgId === dMsgId) {
+            m.deliveredAt = deliveredAt;
+            m.deliveredCount = cnt;
+            break;
+          }
+        }
+      }
+      // 更新 DOM 上对应消息的"未送达"标识
+      const el = document.querySelector('[data-msg-id="' + dMsgId + '"]');
+      if (el && currentChat) renderMessages();
       break;
     }
     case 'reaction_update': {
