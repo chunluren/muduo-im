@@ -1238,16 +1238,43 @@ private:
      * @param path WebSocket 握手请求的 URI 路径（如 "/ws?token=xxx"）
      * @return 验证成功返回用户 ID（> 0）；Token 缺失或验证失败返回 -1
      */
+    /// Phase 3.1：向用户的所有在线设备广播一条消息
+    /// @return 实际投递的设备数（用于监控 / 日志）
+    int broadcastToUser(int64_t userId, const std::string& message) {
+        auto sessions = onlineManager_.getSessions(userId);
+        for (auto& s : sessions) s->sendText(message);
+        return (int)sessions.size();
+    }
+
     int64_t extractUserIdFromPath(const std::string& path) {
         auto pos = path.find("token=");
         if (pos == std::string::npos) return -1;
         std::string token = path.substr(pos + 6);
-        // Strip any trailing query params
         auto ampPos = token.find('&');
         if (ampPos != std::string::npos) {
             token = token.substr(0, ampPos);
         }
         return userService_.verifyToken(token);
+    }
+
+    /// Phase 3.1：从 URL 抽取 device_id（无则默认 "default"）
+    /// 例：/ws?token=xxx&device_id=mobile-abc → "mobile-abc"
+    static std::string extractDeviceIdFromPath(const std::string& path) {
+        auto pos = path.find("device_id=");
+        if (pos == std::string::npos) return OnlineManager::kDefaultDevice;
+        std::string val = path.substr(pos + 10);
+        auto ampPos = val.find('&');
+        if (ampPos != std::string::npos) val = val.substr(0, ampPos);
+        if (val.empty()) return OnlineManager::kDefaultDevice;
+        // 简单清洗：长度 ≤ 64，仅允许 ASCII 安全字符
+        if (val.size() > 64) val = val.substr(0, 64);
+        for (auto& c : val) {
+            if (!(std::isalnum(static_cast<unsigned char>(c)) ||
+                   c == '-' || c == '_' || c == '.')) {
+                return OnlineManager::kDefaultDevice;
+            }
+        }
+        return val;
     }
 
     void setupWebSocket() {
@@ -1273,8 +1300,11 @@ private:
                 return;
             }
 
+            // Phase 3.1：解析 device_id（兼容老客户端不传时为 "default"）
+            std::string deviceId = extractDeviceIdFromPath(path);
             session->setContext("userId", std::to_string(userId));
-            onlineManager_.addUser(userId, session);
+            session->setContext("deviceId", deviceId);
+            onlineManager_.addDevice(userId, deviceId, session);
 
             // Notify friends that user is online
             auto friends = friendService_.getFriends(userId);
@@ -1346,20 +1376,23 @@ private:
         // Close handler: remove from online, notify friends offline
         wsServer_.setCloseHandler([this](const WsSessionPtr& session) {
             std::string userIdStr = session->getContext("userId", "0");
+            std::string deviceId  = session->getContext("deviceId", OnlineManager::kDefaultDevice);
             int64_t userId = 0;
             try { userId = std::stoll(userIdStr); } catch (...) {}
             if (userId <= 0) return;
 
-            onlineManager_.removeUser(userId);
+            // Phase 3.1：单设备下线
+            onlineManager_.removeDevice(userId, deviceId);
 
-            // Notify friends that user is offline
-            auto friends = friendService_.getFriends(userId);
-            std::string offlineMsg = Protocol::makeOffline(userId);
-            for (auto& f : friends) {
-                int64_t friendId = f.value("userId", (int64_t)0);
-                auto friendSession = onlineManager_.getSession(friendId);
-                if (friendSession) {
-                    friendSession->sendText(offlineMsg);
+            // 仅当该 uid 已无任何设备时才通知好友 offline
+            if (!onlineManager_.isOnline(userId)) {
+                auto friends = friendService_.getFriends(userId);
+                std::string offlineMsg = Protocol::makeOffline(userId);
+                for (auto& f : friends) {
+                    int64_t friendId = f.value("userId", (int64_t)0);
+                    for (auto& s : onlineManager_.getSessions(friendId)) {
+                        s->sendText(offlineMsg);
+                    }
                 }
             }
         });
@@ -1416,19 +1449,24 @@ private:
         // ACK 把 clientMsgId 透传回去，前端用它定位 DOM 节点把 msgId 替换为服务端权威 msgId
         session->sendText(Protocol::makeAck(msgId, clientMsgId));
 
-        // Forward to recipient if online
-        auto recipientSession = onlineManager_.getSession(toUserId);
-        if (recipientSession) {
-            json fwd;
-            fwd["type"] = Protocol::MSG;
-            fwd["from"] = std::to_string(fromUserId);
-            fwd["to"] = std::to_string(toUserId);
-            fwd["content"] = content;
-            fwd["msgId"] = msgId;
-            fwd["timestamp"] = timestamp;
-            if (!replyTo.empty()) fwd["replyTo"] = replyTo;
-            recipientSession->sendText(fwd.dump());
-        } else {
+        // Forward to recipient — Phase 3.1 多端：所有设备都推送
+        json fwd;
+        fwd["type"] = Protocol::MSG;
+        fwd["from"] = std::to_string(fromUserId);
+        fwd["to"] = std::to_string(toUserId);
+        fwd["content"] = content;
+        fwd["msgId"] = msgId;
+        fwd["timestamp"] = timestamp;
+        if (!replyTo.empty()) fwd["replyTo"] = replyTo;
+        int delivered = broadcastToUser(toUserId, fwd.dump());
+
+        // 多端同步：推给发送方的其他设备（跳过发起的 session）
+        std::string senderDevice = session->getContext("deviceId", OnlineManager::kDefaultDevice);
+        for (auto& s : onlineManager_.getOtherSessions(fromUserId, senderDevice)) {
+            s->sendText(fwd.dump());
+        }
+
+        if (delivered == 0) {
             // Recipient offline: increment unread count
             incrementUnread(toUserId, fromUserId);
         }
@@ -1526,8 +1564,8 @@ private:
         std::unordered_set<int64_t> mentionSet(mentions.begin(), mentions.end());
         for (int64_t memberId : memberIds) {
             if (memberId == fromUserId) continue;
-            auto memberSession = onlineManager_.getSession(memberId);
-            if (!memberSession) continue;
+            auto memberSessions = onlineManager_.getSessions(memberId);
+            if (memberSessions.empty()) continue;
 
             // 每个接收者构造独立 fwd（mention 字段因人而异）
             json fwd;
@@ -1543,9 +1581,10 @@ private:
                 for (auto uid : mentions) arr.push_back(std::to_string(uid));
                 fwd["mentions"] = arr;
             }
-            // 仅当前接收者被 @ 时标 mention=true（用于客户端 UI 高亮 + 强提示）
             if (mentionSet.count(memberId)) fwd["mention"] = true;
-            memberSession->sendText(fwd.dump());
+            std::string payload = fwd.dump();
+            // Phase 3.1：推送给该成员所有设备
+            for (auto& s : memberSessions) s->sendText(payload);
         }
     }
 
@@ -1572,10 +1611,7 @@ private:
 
         session->sendText(Protocol::makeAck(msgId));
 
-        auto recipientSession = onlineManager_.getSession(toUserId);
-        if (recipientSession) {
-            recipientSession->sendText(Protocol::makeFileMsg(fromUserId, toUserId, url, filename, fileSize, msgId));
-        }
+        broadcastToUser(toUserId, Protocol::makeFileMsg(fromUserId, toUserId, url, filename, fileSize, msgId));
     }
 
     void handleRecall(const WsSessionPtr& session, const json& j, int64_t fromUserId) {
@@ -1602,8 +1638,7 @@ private:
         std::string recallMsg = Protocol::makeRecall(msgId, fromUserId);
         for (auto& f : friends) {
             int64_t fid = f.value("userId", (int64_t)0);
-            auto s = onlineManager_.getSession(fid);
-            if (s) s->sendText(recallMsg);
+            broadcastToUser(fid, recallMsg);
         }
     }
 
@@ -1687,12 +1722,10 @@ private:
             auto memberIds = groupService_.getMemberIds(convId);
             for (auto memberId : memberIds) {
                 if (memberId == fromUserId) continue;
-                auto s = onlineManager_.getSession(memberId);
-                if (s) s->sendText(editPush);
+                broadcastToUser(memberId, editPush);
             }
         } else {
-            auto recipientSession = onlineManager_.getSession(convId);
-            if (recipientSession) recipientSession->sendText(editPush);
+            broadcastToUser(convId, editPush);
         }
 
         auditService_.log(fromUserId, "edit_message",
@@ -1783,13 +1816,11 @@ private:
             auto memberIds = groupService_.getMemberIds(convId);
             for (auto memberId : memberIds) {
                 if (memberId == fromUserId) continue;
-                auto s = onlineManager_.getSession(memberId);
-                if (s) s->sendText(push);
+                broadcastToUser(memberId, push);
             }
         } else {
             // 私聊：推给对方
-            auto peerSession = onlineManager_.getSession(peer);
-            if (peerSession) peerSession->sendText(push);
+            broadcastToUser(peer, push);
         }
 
         (void)added;
@@ -1861,10 +1892,7 @@ private:
         if (fromUser == ackerId) return;  // 不向自己发 delivered
 
         // 推送 delivered 给发送方
-        auto senderSession = onlineManager_.getSession(fromUser);
-        if (senderSession) {
-            senderSession->sendText(Protocol::makeDelivered(msgId, deliveredAt, deliveredCount));
-        }
+        broadcastToUser(fromUser, Protocol::makeDelivered(msgId, deliveredAt, deliveredCount));
         (void)isGroup;
     }
 
@@ -1890,10 +1918,7 @@ private:
         }
 
         // Forward read receipt to the original sender
-        auto senderSession = onlineManager_.getSession(toUserId);
-        if (senderSession) {
-            senderSession->sendText(Protocol::makeReadAck(fromUserId, toUserId, lastMsgId));
-        }
+        broadcastToUser(toUserId, Protocol::makeReadAck(fromUserId, toUserId, lastMsgId));
     }
 
     void handleTyping(const WsSessionPtr& /*session*/, const json& j, int64_t fromUserId) {
@@ -1903,10 +1928,7 @@ private:
         try { toUserId = std::stoll(toStr); } catch (...) {}
         if (toUserId <= 0) return;
 
-        auto recipientSession = onlineManager_.getSession(toUserId);
-        if (recipientSession) {
-            recipientSession->sendText(Protocol::makeTyping(fromUserId, toUserId));
-        }
+        broadcastToUser(toUserId, Protocol::makeTyping(fromUserId, toUserId));
     }
 
     // ==================== Redis Unread Count ====================
