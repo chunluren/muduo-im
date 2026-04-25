@@ -9,6 +9,7 @@
  */
 #pragma once
 
+#include "GatewayRegistry.h"
 #include "im/logic.grpc.pb.h"
 #include "server/MessageService.h"
 #include "util/Snowflake.h"
@@ -21,8 +22,9 @@
 
 class LogicServiceImpl final : public im::LogicService::Service {
 public:
-    explicit LogicServiceImpl(std::shared_ptr<MessageService> msgSvc)
-        : msgSvc_(std::move(msgSvc)) {}
+    LogicServiceImpl(std::shared_ptr<MessageService> msgSvc,
+                     std::shared_ptr<GatewayRegistry> registry)
+        : msgSvc_(std::move(msgSvc)), registry_(std::move(registry)) {}
 
     grpc::Status HandleMessage(grpc::ServerContext* /*ctx*/,
                                const im::MessageRequest* req,
@@ -68,7 +70,7 @@ public:
             resp->mutable_status()->set_code(im::StatusCode::OK);
             resp->mutable_status()->set_msg("saved");
             resp->set_server_msg_id(serverMsgId);
-            // 回给 gateway 立即返还客户端的 ack（沿用现有 ChatServer ack 帧格式）
+            // 回给 gateway 立即返还客户端的 ack
             nlohmann::json ack = {
                 {"type", "ack"},
                 {"clientMsgId", j.value("clientMsgId", "")},
@@ -76,6 +78,21 @@ public:
                 {"timestamp", ts},
             };
             resp->set_inline_reply(ack.dump());
+
+            // 通过 RegisterGateway 反向流推给 to 用户所在 gateway
+            if (registry_) {
+                nlohmann::json fwd = {
+                    {"type", "msg"},
+                    {"from", std::to_string(from)},
+                    {"to", std::to_string(to)},
+                    {"content", content},
+                    {"msgId", msgId},
+                    {"timestamp", ts},
+                };
+                bool pushed = registry_->pushToUser(to, fwd.dump());
+                std::cerr << "[logic] pushToUser uid=" << to
+                          << " result=" << (pushed ? "ok" : "offline") << "\n";
+            }
             return grpc::Status::OK;
         }
 
@@ -96,11 +113,35 @@ public:
     grpc::Status RegisterGateway(
         grpc::ServerContext* /*ctx*/,
         grpc::ServerReaderWriter<im::PushCommand, im::GatewayEvent>* stream) override {
+        std::string gatewayId;
         im::GatewayEvent ev;
-        while (stream->Read(&ev)) { /* W2.D4 */ }
+        while (stream->Read(&ev)) {
+            if (ev.has_hello()) {
+                gatewayId = ev.hello().instance_id();
+                if (registry_) registry_->registerGateway(gatewayId, stream);
+                std::cerr << "[logic] gateway hello id=" << gatewayId
+                          << " ver=" << ev.hello().version() << "\n";
+            } else if (ev.has_conn_open()) {
+                int64_t uid = ev.conn_open().who().uid();
+                if (registry_) registry_->onUserOpen(uid, gatewayId);
+                std::cerr << "[logic] conn_open uid=" << uid << " gw=" << gatewayId << "\n";
+            } else if (ev.has_conn_close()) {
+                int64_t uid = ev.conn_close().who().uid();
+                if (registry_) registry_->onUserClose(uid, gatewayId);
+                std::cerr << "[logic] conn_close uid=" << uid << " gw=" << gatewayId << "\n";
+            } else if (ev.has_heartbeat()) {
+                // 可选：刷新 gateway 心跳时间戳，目前没用，忽略
+            }
+            // up_msg 留给 W3+：让 gateway 也能把上行走 stream 而不是 unary
+        }
+        if (!gatewayId.empty() && registry_) {
+            registry_->deregisterGateway(gatewayId);
+            std::cerr << "[logic] gateway gone id=" << gatewayId << "\n";
+        }
         return grpc::Status::OK;
     }
 
 private:
     std::shared_ptr<MessageService> msgSvc_;
+    std::shared_ptr<GatewayRegistry> registry_;
 };
