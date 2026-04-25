@@ -806,6 +806,8 @@ private:
                 handleRecall(session, j, userId);
             } else if (type == Protocol::EDIT) {
                 handleEdit(session, j, userId);
+            } else if (type == Protocol::REACTION) {
+                handleReaction(session, j, userId);
             } else if (type == Protocol::READ_ACK) {
                 handleReadAck(session, j, userId);
             } else {
@@ -1169,6 +1171,100 @@ private:
                            msgId + ":" + std::to_string(oldBody.size()) +
                            "->" + std::to_string(newBody.size()),
                            "");  // WS 无现成 IP 提取，留空
+    }
+
+    /**
+     * @brief 处理 Reaction 切换（Phase 4.5）
+     *
+     * 客户端协议：{"type":"reaction","msgId":"...","emoji":"👍"}
+     * 服务端：
+     * 1. toggleReaction（DB 已存在则 DELETE，否则 INSERT）
+     * 2. getReactions 拿完整 reactions 字典
+     * 3. 自动判断 msg_kind（先私聊后群聊）
+     * 4. 推 reaction_update 给会话相关方（含发起者，让本端 UI 立即同步）
+     */
+    void handleReaction(const WsSessionPtr& session, const json& j, int64_t fromUserId) {
+        std::string msgId = j.value("msgId", "");
+        std::string emoji = j.value("emoji", "");
+        if (msgId.empty() || emoji.empty()) {
+            session->sendText(Protocol::makeError("missing msgId or emoji"));
+            return;
+        }
+        if (emoji.size() > 16) {
+            session->sendText(Protocol::makeError("emoji too long"));
+            return;
+        }
+
+        // 先 flush，避免对刚发出还没入库的消息做 reaction
+        flushMessageQueue();
+
+        bool added = false;
+        if (!messageService_.toggleReaction(msgId, fromUserId, emoji, &added)) {
+            session->sendText(Protocol::makeError("reaction failed (db error)"));
+            return;
+        }
+
+        // 查会话信息：
+        // 私聊：fetch 双方 (from_user, to_user)，对方 = 不等于 fromUserId 的那个
+        //       前端 convId 用对方 userId（与 from_user 角度一致：A 发给 B 时，A 看到的 convId=B；B 看到的 convId=A）
+        // 群聊：group_id
+        bool isGroup = false;
+        int64_t convId = 0;       // 对方 / 群 ID（推送时用，也用于前端定位会话）
+        int64_t peer = 0;         // 私聊对方 userId（推送时用）
+        bool found = false;
+        {
+            auto conn = mysqlPool_->acquire(2000);
+            if (conn && conn->valid()) {
+                auto res = conn->query("SELECT from_user, to_user FROM private_messages WHERE msg_id='"
+                                        + conn->escape(msgId) + "'");
+                if (res && mysql_num_rows(res.get()) > 0) {
+                    MYSQL_ROW row = mysql_fetch_row(res.get());
+                    int64_t fromU = std::stoll(row[0]);
+                    int64_t toU = std::stoll(row[1]);
+                    peer = (fromUserId == fromU) ? toU : fromU;
+                    convId = peer;  // 客户端视角：私聊会话 = 对方 userId
+                    found = true;
+                } else {
+                    auto res2 = conn->query("SELECT group_id FROM group_messages WHERE msg_id='"
+                                             + conn->escape(msgId) + "'");
+                    if (res2 && mysql_num_rows(res2.get()) > 0) {
+                        MYSQL_ROW row = mysql_fetch_row(res2.get());
+                        convId = std::stoll(row[0]);
+                        isGroup = true;
+                        found = true;
+                    }
+                }
+                mysqlPool_->release(std::move(conn));
+            }
+        }
+        if (!found) {
+            session->sendText(Protocol::makeReactionUpdate(msgId, json::object(),
+                                                            "private", "0"));
+            return;
+        }
+
+        json reactions = messageService_.getReactions(msgId);
+        std::string convType = isGroup ? "group" : "private";
+        std::string convIdStr = std::to_string(convId);
+        std::string push = Protocol::makeReactionUpdate(msgId, reactions, convType, convIdStr);
+
+        // 推送给发起者
+        session->sendText(push);
+
+        if (isGroup) {
+            auto memberIds = groupService_.getMemberIds(convId);
+            for (auto memberId : memberIds) {
+                if (memberId == fromUserId) continue;
+                auto s = onlineManager_.getSession(memberId);
+                if (s) s->sendText(push);
+            }
+        } else {
+            // 私聊：推给对方
+            auto peerSession = onlineManager_.getSession(peer);
+            if (peerSession) peerSession->sendText(push);
+        }
+
+        (void)added;
     }
 
     void handleReadAck(const WsSessionPtr& /*session*/, const json& j, int64_t fromUserId) {

@@ -569,6 +569,72 @@ body {
   max-width: 100%;
 }
 
+/* Reactions 样式（Phase 4.5）*/
+.btn-reaction {
+  background: rgba(255, 165, 0, 0.1);
+  color: #fa8c16;
+  border: 1px solid rgba(255, 165, 0, 0.3);
+  border-radius: 4px;
+  padding: 2px 8px;
+  font-size: 11px;
+  cursor: pointer;
+  margin: 0 4px;
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+.message-item:hover .btn-reaction { opacity: 1; }
+.btn-reaction:hover { background: rgba(255, 165, 0, 0.2); }
+
+.reaction-picker {
+  position: absolute;
+  background: #fff;
+  border: 1px solid #ddd;
+  border-radius: 8px;
+  padding: 6px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+  display: none;
+  z-index: 1000;
+}
+.reaction-picker.show { display: flex; gap: 2px; }
+.reaction-picker .emoji-btn {
+  font-size: 18px;
+  padding: 4px 6px;
+  border-radius: 4px;
+  cursor: pointer;
+  background: transparent;
+  border: none;
+  transition: background 0.15s;
+}
+.reaction-picker .emoji-btn:hover { background: #f0f0f0; }
+
+.reactions-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 4px;
+}
+.reaction-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  background: #f5f5f5;
+  border: 1px solid #e0e0e0;
+  border-radius: 12px;
+  padding: 1px 8px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.15s;
+  user-select: none;
+}
+.reaction-chip:hover { background: #ebebeb; }
+.reaction-chip.active {
+  background: #e6f7ff;
+  border-color: #91d5ff;
+  color: #1890ff;
+}
+.reaction-chip .emoji { font-size: 14px; }
+.reaction-chip .count { font-weight: 500; }
+
 /* 编辑按钮（Phase 4.1）— 跟撤回按钮同样的悬停时显示 */
 .btn-edit {
   background: rgba(24, 144, 255, 0.1);
@@ -2571,6 +2637,28 @@ function appendMessageToDOM(msg) {
     editedTag = `<span class="edited-tag" title="编辑于 ${formatTime(msg.editedAt)}">（已编辑）</span>`;
   }
 
+  // Reaction 按钮（所有有 msgId 的非撤回消息可加 reaction，Phase 4.5）
+  let reactionBtn = '';
+  if (msg.msgId && !msg.recalled) {
+    reactionBtn = `<button class="btn-reaction" onclick="event.stopPropagation();showReactionPicker(event,'${msg.msgId}')">😀+</button>`;
+  }
+
+  // Reactions 显示栏（每个 emoji 一个 chip，含 count + 自己反应过的 .active 高亮）
+  let reactionsBar = '';
+  if (msg.reactions && Object.keys(msg.reactions).length > 0) {
+    const chips = [];
+    for (const emoji of Object.keys(msg.reactions)) {
+      const uids = msg.reactions[emoji] || [];
+      if (!uids.length) continue;
+      const isActive = uids.some(u => u == userId);
+      const tooltip = uids.length + ' 人反应';
+      chips.push(`<span class="reaction-chip ${isActive ? 'active' : ''}" title="${tooltip}" onclick="toggleReaction('${msg.msgId}','${escapeHtml(emoji)}')"><span class="emoji">${escapeHtml(emoji)}</span><span class="count">${uids.length}</span></span>`);
+    }
+    if (chips.length) {
+      reactionsBar = `<div class="reactions-bar">${chips.join('')}</div>`;
+    }
+  }
+
   // Read status for own messages
   let readStatus = '';
   if (isOwn && currentChat && currentChat.type === 'friend') {
@@ -2586,9 +2674,10 @@ function appendMessageToDOM(msg) {
     div.innerHTML = `
       ${senderHtml}
       <div class="message-bubble-wrapper">
-        ${editBtn}${recallBtn}${replyBtn}
+        ${editBtn}${recallBtn}${reactionBtn}${replyBtn}
         <div class="message-bubble">${quoteHtml}${bubbleContent}${editedTag}</div>
       </div>
+      ${reactionsBar}
       <div class="message-time">${formatTime(msg.timestamp)}</div>
       ${readStatus}
     `;
@@ -2597,8 +2686,9 @@ function appendMessageToDOM(msg) {
       ${senderHtml}
       <div class="message-bubble-wrapper">
         <div class="message-bubble">${quoteHtml}${bubbleContent}${editedTag}</div>
-        ${replyBtn}
+        ${reactionBtn}${replyBtn}
       </div>
+      ${reactionsBar}
       <div class="message-time">${formatTime(msg.timestamp)}</div>
       ${readStatus}
     `;
@@ -2866,6 +2956,25 @@ function handleWsMessage(data) {
       }
       break;
     }
+    case 'reaction_update': {
+      // 服务端推送：{msgId, reactions:{emoji:[uid,...]}, convType, convId}
+      const rMsgId = data.msgId;
+      const reactions = data.reactions || {};
+      // 更新 cache
+      for (const key in messageCache) {
+        const msgs = messageCache[key];
+        for (const m of msgs) {
+          if (m.msgId === rMsgId) {
+            m.reactions = reactions;
+            break;
+          }
+        }
+      }
+      // 当前可视且 DOM 在场就 re-render（简单方案，性能可接受因为只重画当前会话）
+      const el = document.querySelector('[data-msg-id="' + rMsgId + '"]');
+      if (el) renderMessages();
+      break;
+    }
     case 'edit': {
       // 服务端推送编辑通知：{msgId, newBody, editedAt, from, convType, convId}
       const editMsgId = data.msgId;
@@ -3032,6 +3141,46 @@ async function uploadFile(file) {
 }
 
 // ===== Message Recall =====
+// ===== Reactions (Phase 4.5) =====
+const REACTION_EMOJIS = ['👍', '❤️', '😂', '😮', '😢', '🎉', '🔥', '👏'];
+let _reactionPickerEl = null;
+
+function showReactionPicker(event, msgId) {
+  // 关旧的
+  if (_reactionPickerEl) {
+    _reactionPickerEl.remove();
+    _reactionPickerEl = null;
+  }
+  const picker = document.createElement('div');
+  picker.className = 'reaction-picker show';
+  picker.innerHTML = REACTION_EMOJIS.map(e =>
+    `<button class="emoji-btn" onclick="event.stopPropagation();toggleReaction('${msgId}','${e}');closeReactionPicker();">${e}</button>`
+  ).join('');
+  document.body.appendChild(picker);
+  // 定位到按钮上方
+  const rect = event.target.getBoundingClientRect();
+  picker.style.left = rect.left + 'px';
+  picker.style.top = (rect.top - 50) + 'px';
+  _reactionPickerEl = picker;
+  // 点击其他地方关闭
+  setTimeout(() => {
+    document.addEventListener('click', closeReactionPicker, { once: true });
+  }, 0);
+}
+
+function closeReactionPicker() {
+  if (_reactionPickerEl) {
+    _reactionPickerEl.remove();
+    _reactionPickerEl = null;
+  }
+}
+
+function toggleReaction(msgId, emoji) {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  ws.send(JSON.stringify({ type: 'reaction', msgId: msgId, emoji: emoji }));
+  // 不做 optimistic update，等 reaction_update 推送回来再渲染
+}
+
 // 编辑消息（Phase 4.1）—— 弹 prompt 让用户输入新内容，发 WS 请求
 function editMessage(msgId) {
   if (!ws || ws.readyState !== WebSocket.OPEN) return;

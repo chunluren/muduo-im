@@ -188,6 +188,89 @@ public:
     }
 
     /**
+     * @brief 切换消息 Reaction（Phase 4.5）
+     *
+     * 协议语义：(msgId, uid, emoji) UNIQUE，已存在则删除（取消），不存在则插入（添加）。
+     * 同一用户对同一消息可同时使用多个 emoji（不同 emoji 互不影响）。
+     *
+     * @param msgId  消息 ID（服务端权威 Snowflake）
+     * @param uid    反应者 userId
+     * @param emoji  emoji 字符（≤ 16 字节，UTF-8 一个 emoji 通常 4 字节）
+     * @param outAdded 输出参数：true=新增了 reaction，false=删除了 reaction
+     * @return true 操作成功；false DB 失败
+     */
+    bool toggleReaction(const std::string& msgId, int64_t uid,
+                         const std::string& emoji, bool* outAdded = nullptr) {
+        if (msgId.empty() || emoji.empty() || emoji.size() > 16) return false;
+
+        auto conn = db_->acquire(2000);
+        if (!conn || !conn->valid()) return false;
+
+        // 先查是否已存在
+        std::string querySql =
+            "SELECT id FROM message_reactions WHERE msg_id='"
+            + conn->escape(msgId) + "' AND uid=" + std::to_string(uid)
+            + " AND emoji='" + conn->escape(emoji) + "'";
+        auto result = conn->query(querySql);
+        bool exists = result && mysql_num_rows(result.get()) > 0;
+
+        bool ok = false;
+        if (exists) {
+            // 取消：DELETE
+            PreparedStatement stmt(conn,
+                "DELETE FROM message_reactions WHERE msg_id=? AND uid=? AND emoji=?");
+            if (stmt.valid()) {
+                stmt.bindString(1, msgId);
+                stmt.bindInt64(2, uid);
+                stmt.bindString(3, emoji);
+                ok = stmt.execute();
+            }
+            if (outAdded) *outAdded = false;
+        } else {
+            // 添加：INSERT IGNORE（双重防并发）
+            PreparedStatement stmt(conn,
+                "INSERT IGNORE INTO message_reactions (msg_id, uid, emoji) VALUES (?, ?, ?)");
+            if (stmt.valid()) {
+                stmt.bindString(1, msgId);
+                stmt.bindInt64(2, uid);
+                stmt.bindString(3, emoji);
+                ok = stmt.execute();
+            }
+            if (outAdded) *outAdded = true;
+        }
+
+        db_->release(std::move(conn));
+        return ok;
+    }
+
+    /**
+     * @brief 查询消息的所有 reactions
+     *
+     * @param msgId 消息 ID
+     * @return JSON 对象 {emoji: [uid, ...], ...}，按 emoji 分组的反应者 uid 列表
+     */
+    json getReactions(const std::string& msgId) {
+        json result = json::object();
+        auto conn = db_->acquire(2000);
+        if (!conn || !conn->valid()) return result;
+
+        auto res = conn->query(
+            "SELECT emoji, uid FROM message_reactions WHERE msg_id='"
+            + conn->escape(msgId) + "' ORDER BY id ASC");
+        if (res) {
+            MYSQL_ROW row;
+            while ((row = mysql_fetch_row(res.get()))) {
+                std::string emoji = row[0];
+                std::string uidStr = row[1];
+                if (!result.contains(emoji)) result[emoji] = json::array();
+                result[emoji].push_back(uidStr);
+            }
+        }
+        db_->release(std::move(conn));
+        return result;
+    }
+
+    /**
      * @brief 编辑消息（Phase 4.1）
      *
      * 限制：
