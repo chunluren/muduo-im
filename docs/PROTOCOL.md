@@ -114,6 +114,8 @@ ws://host:9090/ws?token=<JWT>
 | `offline` | S→C | 好友离线通知 | ✅ |
 | `unread_sync` | S→C | 用户上线时推送各对话未读数 | ✅ |
 | `edit` | C↔S | 消息编辑（15 分钟内） | ✅ |
+| `reaction` | C→S | 切换 emoji 表情反应 | ✅ |
+| `reaction_update` | S→C | 反应字典变化推送 | ✅ |
 | `error` | S→C | 错误响应 | ✅ |
 
 ### 2.2 计划中（Phase 2-4）
@@ -123,7 +125,6 @@ ws://host:9090/ws?token=<JWT>
 | `delivered` | S→C | 消息送达对端的回执（双向 ACK） | #6 P2.1 |
 | `client_ack` | C→S | 接收方确认消息已送达本地 | #6 P2.1 |
 | `read_sync` | S→C | 多端已读同步 | #10 P3.2 |
-| `reaction` | C→S | 添加 / 切换表情反应 | #16 P4.5 |
 | `reaction_update` | S→C | 表情反应变化推送 | #16 P4.5 |
 | `device_kicked` | S→C | 被管理端 / 自己其他端踢下线 | #9 P3.1 |
 
@@ -431,6 +432,60 @@ case 'ack': {
 
 ---
 
+## 7.6 表情反应（reaction / reaction_update · Phase 4.5）
+
+### 7.6.1 客户端切换（C→S）
+
+```json
+{"type":"reaction","msgId":"172263581197272608","emoji":"👍"}
+```
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `msgId` | string | 是 | 服务端 Snowflake msgId |
+| `emoji` | string | 是 | UTF-8 emoji（≤ 16 字节） |
+
+服务端语义：(msgId, uid, emoji) UNIQUE，已存在则**删除**（取消反应），不存在则**插入**（添加反应）。同一用户对同一消息可同时使用多个不同 emoji。
+
+### 7.6.2 服务端推送（S→C）
+
+```json
+{
+  "type": "reaction_update",
+  "msgId": "172263581197272608",
+  "reactions": {
+    "👍": ["11", "22"],
+    "❤️": ["33"]
+  },
+  "convType": "private",
+  "convId": "12345"
+}
+```
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `reactions` | object | **完整字典**：emoji → 反应过的 uid 数组 |
+| `convType` | string | "private" / "group" |
+| `convId` | string | 私聊对方 userId / 群 ID |
+
+**关键约定**：每次推送都是**完整字典**（不是增量），客户端整体替换显示。
+
+### 7.6.3 业务规则
+
+- **任何会话成员**都能 reaction（不限发送者）
+- **emoji 任意选择**（前端预设 8 个常用：👍❤️😂😮😢🎉🔥👏，但服务端不限制内容）
+- **(msgId, uid, emoji) UNIQUE**，重复请求等价于切换（取消）
+- **反应不持久化时间戳的语义**——只关心当前是否反应（旧反应不展示历史）
+- 推送给会话相关方：私聊推对方；群聊推所有在线成员（含发起者用于本端 UI 立即同步）
+- 消息已撤回 / 已删除时，前端不显示 reaction 按钮；后端仍可处理（DB 行存在）
+
+### 7.6.4 实现位置
+
+- 后端：`MessageService::toggleReaction` / `getReactions`、`ChatServer::handleReaction`、`Protocol::makeReactionUpdate`
+- 前端：`web/index.html` 内 `showReactionPicker`、`toggleReaction`、`case 'reaction_update':` handler、`.reactions-bar` / `.reaction-chip` CSS
+
+---
+
 ## 8. 已读回执（read_ack）
 
 ### 8.1 客户端上报（C→S）
@@ -545,24 +600,7 @@ S→C：
 
 ### 10.3 edit（消息编辑 · #12 P4.1 已实现，见 §7.5）
 
-### 10.4 reaction / reaction_update（表情反应 · 计划 #16 P4.5）
-
-C→S：
-```json
-{"type":"reaction","msgId":"...","emoji":"👍"}
-```
-
-S→C：
-```json
-{
-  "type": "reaction_update",
-  "msgId": "...",
-  "reactions": {
-    "👍": ["1", "2"],
-    "❤️": ["3"]
-  }
-}
-```
+### 10.4 reaction / reaction_update（已实现，见 §7.6）
 
 ### 10.5 device_kicked（多端踢下线 · 计划 #9 P3.1）
 
@@ -579,6 +617,7 @@ S→C：
 
 | 日期 | 变更 | 关联 PR |
 |------|------|---------|
+| 2026-04-25 | 新增 `reaction` / `reaction_update` 类型 — 表情反应 | #16 |
 | 2026-04-25 | 新增 `edit` 类型（C↔S）— 消息编辑 15 分钟时间窗 | #12 |
 | 2026-04-22 | 创建本文档；冻结 v1 协议（11 类型）；明确双 msgId 约定 | (W1 路线图) |
 | 2026-04-21 | ack 加 `clientMsgId` 透传字段（修复 Recall bug） | `0aee39e` |

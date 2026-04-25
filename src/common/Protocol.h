@@ -50,6 +50,8 @@ inline const char* ERROR_MSG   = "error";      ///< 错误消息（S->C，通知
 inline const char* FILE_MSG    = "file_msg";   ///< 文件消息（C->S 发送 / S->C 推送，包含文件 URL 和元信息）
 inline const char* RECALL      = "recall";     ///< 消息撤回通知（C->S 请求撤回 / S->C 通知撤回）
 inline const char* EDIT        = "edit";       ///< 消息编辑（C->S 请求编辑 / S->C 通知编辑后内容）
+inline const char* REACTION    = "reaction";   ///< 表情反应（C->S 切换添加/删除）
+inline const char* REACTION_UPDATE = "reaction_update";  ///< 反应变化推送（S->C，含完整 reactions 字典）
 inline const char* READ_ACK    = "read_ack";   ///< 已读回执（C->S 发送，标记消息已读位置）
 inline const char* TYPING      = "typing";     ///< 正在输入提示（C->S 发送 / S->C 转发）
 inline const char* UNREAD_SYNC = "unread_sync"; ///< 未读消息同步（S->C，用户上线时推送各好友未读计数）
@@ -333,6 +335,35 @@ inline std::string makeRecall(const std::string& msgId, int64_t fromUserId) {
  * @param convType "private" 或 "group"
  * @param convId   私聊：对方 userId；群聊：groupId（字符串化）
  */
+/**
+ * @brief 构造 reaction_update 推送（服务端 -> 客户端）
+ *
+ * @code
+ * {"type":"reaction_update","msgId":"...","reactions":{"👍":["1","2"],"❤️":["3"]},"convType":"private","convId":"123"}
+ * @endcode
+ *
+ * 推送时机：任何用户对该消息的 reaction 变化（添加 / 取消）后，
+ * 服务端把该消息的**完整 reactions 字典**推给会话相关方，前端整体替换显示。
+ *
+ * @param msgId 消息 ID
+ * @param reactions {emoji: [uid, ...]} 字典
+ * @param convType "private" / "group"
+ * @param convId 私聊对方 userId / 群 ID（字符串化）
+ */
+inline std::string makeReactionUpdate(const std::string& msgId,
+                                        const json& reactions,
+                                        const std::string& convType,
+                                        const std::string& convId) {
+    json j = {
+        {"type", REACTION_UPDATE},
+        {"msgId", msgId},
+        {"reactions", reactions},
+        {"convType", convType},
+        {"convId", convId}
+    };
+    return j.dump();
+}
+
 inline std::string makeEdit(const std::string& msgId, const std::string& newBody,
                              int64_t editedAt, int64_t fromUserId,
                              const std::string& convType,
