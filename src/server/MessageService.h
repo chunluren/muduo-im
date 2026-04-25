@@ -188,6 +188,112 @@ public:
     }
 
     /**
+     * @brief 编辑消息（Phase 4.1）
+     *
+     * 限制：
+     * - 必须是消息发送者本人
+     * - 15 分钟内可编辑（900_000 ms）
+     * - 已撤回（recalled=1）的消息不可编辑
+     * - 首次编辑保存 original_body，后续编辑保留首版（不覆盖）
+     *
+     * 事务保证：UPDATE messages 表 + INSERT message_edits 审计表 同一事务，
+     * 任一失败回滚（避免内容已改但审计漏记，或反之）。
+     *
+     * @param msgId      消息 ID（服务端权威 Snowflake）
+     * @param editorId   编辑者 userId（必须等于消息 from_user）
+     * @param newBody    新内容
+     * @param msgKind    0=私聊 1=群聊（决定查 private_messages 还是 group_messages）
+     * @param outOldBody 输出参数：编辑前的内容（推送给接收端用作展示对比，可选）
+     * @return true 编辑成功；false 不存在 / 非本人 / 超时 / 已撤回 / DB 失败
+     */
+    bool editMessage(const std::string& msgId, int64_t editorId,
+                     const std::string& newBody, int msgKind,
+                     std::string* outOldBody = nullptr) {
+        if (msgKind != 0 && msgKind != 1) return false;
+        const char* table = (msgKind == 0) ? "private_messages" : "group_messages";
+
+        auto conn = db_->acquire(3000);
+        if (!conn || !conn->valid()) return false;
+
+        TransactionGuard tx(conn);
+        if (!tx.active()) {
+            db_->release(std::move(conn));
+            return false;
+        }
+
+        int64_t nowMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count();
+        const int64_t kEditWindowMs = 15 * 60 * 1000;  // 15 分钟
+        int64_t windowStart = nowMs - kEditWindowMs;
+
+        // 1. 校验：查现有消息（含 from_user / timestamp / recalled / content / original_body）
+        std::string querySql = std::string(
+            "SELECT from_user, timestamp, recalled, content, original_body FROM ")
+            + table + " WHERE msg_id='" + conn->escape(msgId) + "'";
+        auto result = conn->query(querySql);
+        if (!result || mysql_num_rows(result.get()) == 0) {
+            db_->release(std::move(conn));
+            return false;
+        }
+        MYSQL_ROW row = mysql_fetch_row(result.get());
+        int64_t fromUser = std::stoll(row[0]);
+        int64_t ts = std::stoll(row[1]);
+        int recalled = row[2] ? std::stoi(row[2]) : 0;
+        std::string oldBody = row[3] ? row[3] : "";
+        std::string existingOriginal = row[4] ? row[4] : "";
+
+        if (fromUser != editorId) { db_->release(std::move(conn)); return false; }
+        if (recalled != 0)        { db_->release(std::move(conn)); return false; }
+        if (ts < windowStart)     { db_->release(std::move(conn)); return false; }
+
+        if (outOldBody) *outOldBody = oldBody;
+
+        // 2. UPDATE：set content/edited_at；首次编辑同时保存 original_body
+        const char* updateSql = (existingOriginal.empty())
+            ? "UPDATE %s SET content=?, edited_at=?, original_body=? WHERE msg_id=? AND from_user=? AND recalled=0"
+            : "UPDATE %s SET content=?, edited_at=? WHERE msg_id=? AND from_user=? AND recalled=0";
+        char buf[256];
+        std::snprintf(buf, sizeof(buf), updateSql, table);
+
+        PreparedStatement stmt(conn, buf);
+        if (!stmt.valid()) { db_->release(std::move(conn)); return false; }
+        stmt.bindString(1, newBody);
+        stmt.bindInt64(2, nowMs);
+        if (existingOriginal.empty()) {
+            stmt.bindString(3, oldBody);   // 首次编辑：保留旧内容作为 original
+            stmt.bindString(4, msgId);
+            stmt.bindInt64(5, editorId);
+        } else {
+            stmt.bindString(3, msgId);
+            stmt.bindInt64(4, editorId);
+        }
+        if (!stmt.execute() || stmt.affectedRows() == 0) {
+            db_->release(std::move(conn));
+            return false;
+        }
+
+        // 3. INSERT 编辑历史
+        PreparedStatement editStmt(conn,
+            "INSERT INTO message_edits (msg_id, editor_id, msg_kind, old_body, new_body, edited_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)");
+        if (!editStmt.valid()) { db_->release(std::move(conn)); return false; }
+        editStmt.bindString(1, msgId);
+        editStmt.bindInt64(2, editorId);
+        editStmt.bindInt64(3, msgKind);
+        editStmt.bindString(4, oldBody);
+        editStmt.bindString(5, newBody);
+        editStmt.bindInt64(6, nowMs);
+        if (!editStmt.execute()) {
+            db_->release(std::move(conn));
+            return false;  // 自动 rollback
+        }
+
+        bool committed = tx.commit();
+        db_->release(std::move(conn));
+        return committed;
+    }
+
+    /**
      * @brief 撤回消息
      *
      * 撤回限制：

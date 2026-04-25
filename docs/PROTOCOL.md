@@ -113,6 +113,7 @@ ws://host:9090/ws?token=<JWT>
 | `online` | S→C | 好友上线通知 | ✅ |
 | `offline` | S→C | 好友离线通知 | ✅ |
 | `unread_sync` | S→C | 用户上线时推送各对话未读数 | ✅ |
+| `edit` | C↔S | 消息编辑（15 分钟内） | ✅ |
 | `error` | S→C | 错误响应 | ✅ |
 
 ### 2.2 计划中（Phase 2-4）
@@ -122,7 +123,6 @@ ws://host:9090/ws?token=<JWT>
 | `delivered` | S→C | 消息送达对端的回执（双向 ACK） | #6 P2.1 |
 | `client_ack` | C→S | 接收方确认消息已送达本地 | #6 P2.1 |
 | `read_sync` | S→C | 多端已读同步 | #10 P3.2 |
-| `edit` | C↔S | 消息编辑 | #12 P4.1 |
 | `reaction` | C→S | 添加 / 切换表情反应 | #16 P4.5 |
 | `reaction_update` | S→C | 表情反应变化推送 | #16 P4.5 |
 | `device_kicked` | S→C | 被管理端 / 自己其他端踢下线 | #9 P3.1 |
@@ -382,6 +382,55 @@ case 'ack': {
 
 ---
 
+## 7.5 消息编辑（edit · Phase 4.1）
+
+### 7.5.1 客户端发起（C→S）
+
+```json
+{"type":"edit","msgId":"172263581197272608","newBody":"修改后的内容"}
+```
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `msgId` | string | 是 | **服务端 Snowflake msgId**（不是 clientMsgId） |
+| `newBody` | string | 是 | 编辑后内容，长度 ≤ 10000 |
+
+### 7.5.2 服务端推送（S→C，发给会话相关方）
+
+```json
+{
+  "type": "edit",
+  "msgId": "172263581197272608",
+  "newBody": "修改后的内容",
+  "editedAt": 1745000000000,
+  "from": "11111",
+  "convType": "private",
+  "convId": "12345"
+}
+```
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `editedAt` | int64 | 编辑时间戳（毫秒），客户端用作"已编辑"展示时间 |
+| `convType` | string | "private" / "group" |
+| `convId` | string | 私聊对方 userId / 群 ID |
+
+### 7.5.3 业务规则
+
+- **必须是发送者本人**（数据库 from_user 校验）
+- **15 分钟时间窗**（900_000 ms），超时返回 error
+- **已撤回的消息不可编辑**（recalled=1 检查）
+- **首次编辑保留 original_body**，后续编辑 不再覆盖（保留首版）
+- **每次编辑写入 message_edits 审计表**（含 old_body / new_body / edited_at）
+- **事务保证**：UPDATE messages + INSERT message_edits 在同一事务（任一失败回滚）
+
+### 7.5.4 实现位置
+
+- 后端：`MessageService::editMessage`、`ChatServer::handleEdit`、`Protocol::makeEdit`
+- 前端：`web/index.html` 内 `editMessage()`、`case 'edit':` handler、`.btn-edit` / `.edited-tag` CSS
+
+---
+
 ## 8. 已读回执（read_ack）
 
 ### 8.1 客户端上报（C→S）
@@ -494,17 +543,7 @@ S→C：
 }
 ```
 
-### 10.3 edit（消息编辑 · 计划 #12 P4.1）
-
-C→S：
-```json
-{"type":"edit","msgId":"...","newBody":"..."}
-```
-
-S→C：
-```json
-{"type":"edit","msgId":"...","newBody":"...","editedAt":1745...}
-```
+### 10.3 edit（消息编辑 · #12 P4.1 已实现，见 §7.5）
 
 ### 10.4 reaction / reaction_update（表情反应 · 计划 #16 P4.5）
 
@@ -540,6 +579,7 @@ S→C：
 
 | 日期 | 变更 | 关联 PR |
 |------|------|---------|
+| 2026-04-25 | 新增 `edit` 类型（C↔S）— 消息编辑 15 分钟时间窗 | #12 |
 | 2026-04-22 | 创建本文档；冻结 v1 协议（11 类型）；明确双 msgId 约定 | (W1 路线图) |
 | 2026-04-21 | ack 加 `clientMsgId` 透传字段（修复 Recall bug） | `0aee39e` |
 | 2026-04-21 | msgId 由 UUID 改为 Snowflake（仅服务端权威） | `74e06fa` |

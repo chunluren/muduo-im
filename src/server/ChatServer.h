@@ -804,6 +804,8 @@ private:
                 handleFileMessage(session, j, userId);
             } else if (type == Protocol::RECALL) {
                 handleRecall(session, j, userId);
+            } else if (type == Protocol::EDIT) {
+                handleEdit(session, j, userId);
             } else if (type == Protocol::READ_ACK) {
                 handleReadAck(session, j, userId);
             } else {
@@ -1073,6 +1075,100 @@ private:
             auto s = onlineManager_.getSession(fid);
             if (s) s->sendText(recallMsg);
         }
+    }
+
+    /**
+     * @brief 处理消息编辑（Phase 4.1）
+     *
+     * 协议：客户端发 {"type":"edit","msgId":"...","newBody":"..."}
+     * 流程：
+     * 1. 校验字段（msgId / newBody / 长度）
+     * 2. 先 flushMessageQueue 确保消息已入库（与 handleRecall 同样原因）
+     * 3. 推断 msg_kind（先试私聊，再试群聊）
+     * 4. messageService_.editMessage 校验 + 事务执行 UPDATE + INSERT message_edits
+     * 5. 推送给会话相关方（私聊：对方；群聊：所有在线成员）
+     */
+    void handleEdit(const WsSessionPtr& session, const json& j, int64_t fromUserId) {
+        std::string msgId = j.value("msgId", "");
+        std::string newBody = j.value("newBody", "");
+        if (msgId.empty() || newBody.empty()) {
+            session->sendText(Protocol::makeError("missing msgId or newBody"));
+            return;
+        }
+        if (newBody.size() > 10000) {
+            session->sendText(Protocol::makeError("message too long (max 10000 chars)"));
+            return;
+        }
+
+        // 与 recall 同样：先 flush Redis 队列，避免新消息还没入 MySQL
+        flushMessageQueue();
+
+        // 先尝试私聊编辑；失败再尝试群聊（前端不需告知 msg_kind，服务端自动判断）
+        std::string oldBody;
+        bool ok = messageService_.editMessage(msgId, fromUserId, newBody, /*msgKind=*/0, &oldBody);
+        bool isGroup = false;
+        int64_t convId = 0;
+
+        if (ok) {
+            // 私聊：查 to_user 作为推送对象
+            auto conn = mysqlPool_->acquire(2000);
+            if (conn && conn->valid()) {
+                auto res = conn->query("SELECT to_user FROM private_messages WHERE msg_id='"
+                                        + conn->escape(msgId) + "'");
+                if (res && mysql_num_rows(res.get()) > 0) {
+                    MYSQL_ROW row = mysql_fetch_row(res.get());
+                    convId = std::stoll(row[0]);
+                }
+                mysqlPool_->release(std::move(conn));
+            }
+        } else {
+            ok = messageService_.editMessage(msgId, fromUserId, newBody, /*msgKind=*/1, &oldBody);
+            if (ok) {
+                isGroup = true;
+                auto conn = mysqlPool_->acquire(2000);
+                if (conn && conn->valid()) {
+                    auto res = conn->query("SELECT group_id FROM group_messages WHERE msg_id='"
+                                            + conn->escape(msgId) + "'");
+                    if (res && mysql_num_rows(res.get()) > 0) {
+                        MYSQL_ROW row = mysql_fetch_row(res.get());
+                        convId = std::stoll(row[0]);
+                    }
+                    mysqlPool_->release(std::move(conn));
+                }
+            }
+        }
+
+        if (!ok) {
+            session->sendText(Protocol::makeError("edit failed (timeout / not your message / already recalled)"));
+            return;
+        }
+
+        int64_t editedAt = Protocol::nowMs();
+        std::string convType = isGroup ? "group" : "private";
+        std::string convIdStr = std::to_string(convId);
+        std::string editPush = Protocol::makeEdit(msgId, newBody, editedAt,
+                                                    fromUserId, convType, convIdStr);
+
+        // 通知发送者（让本端 UI 也能更新"已编辑"标识）
+        session->sendText(editPush);
+
+        // 推送给会话相关方
+        if (isGroup) {
+            auto memberIds = groupService_.getMemberIds(convId);
+            for (auto memberId : memberIds) {
+                if (memberId == fromUserId) continue;
+                auto s = onlineManager_.getSession(memberId);
+                if (s) s->sendText(editPush);
+            }
+        } else {
+            auto recipientSession = onlineManager_.getSession(convId);
+            if (recipientSession) recipientSession->sendText(editPush);
+        }
+
+        auditService_.log(fromUserId, "edit_message",
+                           msgId + ":" + std::to_string(oldBody.size()) +
+                           "->" + std::to_string(newBody.size()),
+                           "");  // WS 无现成 IP 提取，留空
     }
 
     void handleReadAck(const WsSessionPtr& /*session*/, const json& j, int64_t fromUserId) {

@@ -569,6 +569,31 @@ body {
   max-width: 100%;
 }
 
+/* 编辑按钮（Phase 4.1）— 跟撤回按钮同样的悬停时显示 */
+.btn-edit {
+  background: rgba(24, 144, 255, 0.1);
+  color: #1890ff;
+  border: 1px solid rgba(24, 144, 255, 0.3);
+  border-radius: 4px;
+  padding: 2px 8px;
+  font-size: 11px;
+  cursor: pointer;
+  margin: 0 4px;
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+.message-item.own:hover .btn-edit { opacity: 1; }
+.btn-edit:hover {
+  background: rgba(24, 144, 255, 0.2);
+}
+/* 已编辑标签 */
+.edited-tag {
+  font-size: 10px;
+  color: #999;
+  margin-left: 4px;
+  font-weight: normal;
+}
+
 .btn-recall {
   display: none;
   padding: 2px 6px;
@@ -2339,7 +2364,8 @@ async function selectChat(type, id, name) {
       recalled: m.recalled || false,
       read: m.read || false,
       replyTo: m.replyTo,
-      timestamp: m.timestamp
+      timestamp: m.timestamp,
+      editedAt: m.editedAt || m.edited_at  // Phase 4.1
     }));
     sortMessages(messageCache[key]);
     renderMessages();
@@ -2522,11 +2548,27 @@ function appendMessageToDOM(msg) {
     }
   }
 
+  // Edit button for own text messages within 15 minutes (Phase 4.1)
+  // 文件/图片消息不支持编辑（fileUrl 存在则跳过）
+  let editBtn = '';
+  if (isOwn && msg.msgId && msg.timestamp && !msg.fileUrl && !msg.recalled) {
+    const elapsed = Date.now() - (typeof msg.timestamp === 'number' ? msg.timestamp : parseInt(msg.timestamp));
+    if (elapsed < 15 * 60 * 1000) {
+      editBtn = `<button class="btn-edit" onclick="editMessage('${msg.msgId}')">编辑</button>`;
+    }
+  }
+
   // Reply button (for all non-recalled messages with msgId)
   let replyBtn = '';
   if (msg.msgId) {
     const replyContent = escapeHtml((msg.content || '文件').substring(0, 40)).replace(/'/g, "\\'").replace(/"/g, '&quot;');
     replyBtn = `<button class="btn-reply" onclick="event.stopPropagation();setReply('${msg.msgId}', '${replyContent}', ${msg.from})">回复</button>`;
+  }
+
+  // "已编辑" 标签
+  let editedTag = '';
+  if (msg.editedAt) {
+    editedTag = `<span class="edited-tag" title="编辑于 ${formatTime(msg.editedAt)}">（已编辑）</span>`;
   }
 
   // Read status for own messages
@@ -2544,8 +2586,8 @@ function appendMessageToDOM(msg) {
     div.innerHTML = `
       ${senderHtml}
       <div class="message-bubble-wrapper">
-        ${recallBtn}${replyBtn}
-        <div class="message-bubble">${quoteHtml}${bubbleContent}</div>
+        ${editBtn}${recallBtn}${replyBtn}
+        <div class="message-bubble">${quoteHtml}${bubbleContent}${editedTag}</div>
       </div>
       <div class="message-time">${formatTime(msg.timestamp)}</div>
       ${readStatus}
@@ -2554,7 +2596,7 @@ function appendMessageToDOM(msg) {
     div.innerHTML = `
       ${senderHtml}
       <div class="message-bubble-wrapper">
-        <div class="message-bubble">${quoteHtml}${bubbleContent}</div>
+        <div class="message-bubble">${quoteHtml}${bubbleContent}${editedTag}</div>
         ${replyBtn}
       </div>
       <div class="message-time">${formatTime(msg.timestamp)}</div>
@@ -2824,6 +2866,29 @@ function handleWsMessage(data) {
       }
       break;
     }
+    case 'edit': {
+      // 服务端推送编辑通知：{msgId, newBody, editedAt, from, convType, convId}
+      const editMsgId = data.msgId;
+      const newBody = data.newBody || '';
+      const editedAt = data.editedAt || Date.now();
+      // 1. 更新所有 cache 里 msgId 匹配的记录
+      for (const key in messageCache) {
+        const msgs = messageCache[key];
+        for (let i = 0; i < msgs.length; i++) {
+          if (msgs[i].msgId === editMsgId) {
+            msgs[i].content = newBody;
+            msgs[i].editedAt = editedAt;
+            break;
+          }
+        }
+      }
+      // 2. 重渲染当前可视消息（DOM 中 bubble 内容 + 已编辑标签都要更新）
+      const editEl = document.querySelector('[data-msg-id="' + editMsgId + '"]');
+      if (editEl && currentChat) {
+        renderMessages();
+      }
+      break;
+    }
     case 'recall': {
       const recallMsgId = data.msgId;
       // Update in all message caches
@@ -2967,6 +3032,32 @@ async function uploadFile(file) {
 }
 
 // ===== Message Recall =====
+// 编辑消息（Phase 4.1）—— 弹 prompt 让用户输入新内容，发 WS 请求
+function editMessage(msgId) {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  // 找原内容预填到 prompt
+  let oldContent = '';
+  for (const key in messageCache) {
+    const msgs = messageCache[key];
+    const m = msgs.find(x => x.msgId === msgId);
+    if (m) { oldContent = m.content || ''; break; }
+  }
+  const newBody = prompt('编辑消息（15 分钟内可改）:', oldContent);
+  if (newBody === null) return;  // 用户取消
+  const trimmed = newBody.trim();
+  if (!trimmed) {
+    alert('内容不能为空（如需删除请用"撤回"功能）');
+    return;
+  }
+  if (trimmed === oldContent) return;  // 没改动
+  if (trimmed.length > 10000) {
+    alert('内容过长（最多 10000 字符）');
+    return;
+  }
+  ws.send(JSON.stringify({ type: 'edit', msgId: msgId, newBody: trimmed }));
+  // 不做 optimistic update —— 等服务端推送 'edit' 消息再更新（避免编辑失败时回退麻烦）
+}
+
 function recallMessage(msgId) {
   if (!ws || ws.readyState !== WebSocket.OPEN) return;
   ws.send(JSON.stringify({ type: 'recall', msgId: msgId }));

@@ -49,6 +49,7 @@ inline const char* OFFLINE     = "offline";    ///< 用户离线通知（S->C，
 inline const char* ERROR_MSG   = "error";      ///< 错误消息（S->C，通知客户端操作失败及原因）
 inline const char* FILE_MSG    = "file_msg";   ///< 文件消息（C->S 发送 / S->C 推送，包含文件 URL 和元信息）
 inline const char* RECALL      = "recall";     ///< 消息撤回通知（C->S 请求撤回 / S->C 通知撤回）
+inline const char* EDIT        = "edit";       ///< 消息编辑（C->S 请求编辑 / S->C 通知编辑后内容）
 inline const char* READ_ACK    = "read_ack";   ///< 已读回执（C->S 发送，标记消息已读位置）
 inline const char* TYPING      = "typing";     ///< 正在输入提示（C->S 发送 / S->C 转发）
 inline const char* UNREAD_SYNC = "unread_sync"; ///< 未读消息同步（S->C，用户上线时推送各好友未读计数）
@@ -310,6 +311,42 @@ inline std::string makeFileMsg(int64_t from, int64_t to, const std::string& url,
  */
 inline std::string makeRecall(const std::string& msgId, int64_t fromUserId) {
     return json({{"type", RECALL}, {"msgId", msgId}, {"from", std::to_string(fromUserId)}}).dump();
+}
+
+/**
+ * @brief 构造消息编辑通知（服务端 -> 接收方推送 / 客户端 -> 服务端请求）
+ *
+ * 服务端推送格式：
+ * @code
+ * {"type":"edit","msgId":"...","newBody":"...","editedAt":1745...,"from":"123","convType":"private","convId":"456"}
+ * @endcode
+ *
+ * 客户端请求格式：
+ * @code
+ * {"type":"edit","msgId":"...","newBody":"..."}
+ * @endcode
+ *
+ * @param msgId    被编辑的消息 ID（服务端权威 Snowflake）
+ * @param newBody  编辑后的内容
+ * @param editedAt 编辑时间戳（毫秒）
+ * @param fromUserId 编辑者 userId
+ * @param convType "private" 或 "group"
+ * @param convId   私聊：对方 userId；群聊：groupId（字符串化）
+ */
+inline std::string makeEdit(const std::string& msgId, const std::string& newBody,
+                             int64_t editedAt, int64_t fromUserId,
+                             const std::string& convType,
+                             const std::string& convId) {
+    json j = {
+        {"type", EDIT},
+        {"msgId", msgId},
+        {"newBody", newBody},
+        {"editedAt", editedAt},
+        {"from", std::to_string(fromUserId)},
+        {"convType", convType},
+        {"convId", convId}
+    };
+    return j.dump();
 }
 
 /**
