@@ -35,6 +35,7 @@
 #include "server/ESClient.h"
 #include "server/DeviceService.h"
 #include "server/PushService.h"
+#include "moderation/ContentModerationService.h"
 #include "http/HttpServer.h"
 #include "http/MultipartParser.h"
 #include "websocket/WebSocketServer.h"
@@ -100,6 +101,7 @@ public:
         , auditService_(mysqlPool_)
         , deviceService_(std::make_shared<DeviceService>(mysqlPool_))
         , pushService_(std::make_shared<PushService>(redisPool_, deviceService_))
+        , moderation_(std::make_shared<ContentModerationService>(mysqlPool_))
         , jwtRevocation_(redisPool_)
         , jwt_(jwtSecret)
         , jwtSecret_(jwtSecret)
@@ -171,6 +173,9 @@ public:
     }
 
     void start() {
+        // Phase 5.2: 启动审核词库热更新
+        if (moderation_) moderation_->startReloadThread(60);
+
         httpServer_.enableCors();
         httpServer_.useRateLimit(100); // 100 req/sec per IP
         httpServer_.enableMetrics();  // 暴露 GET /metrics
@@ -1496,15 +1501,26 @@ private:
 
         // 服务端权威 msgId 用 Snowflake（时序有序、跨实例唯一），用于持久化和撤回
         std::string msgId = Protocol::generateServerMsgId();
-        // 客户端 msgId 用于幂等去重 + ack 关联本地消息（前端 DOM 节点替换）
         std::string clientMsgId = j.value("msgId", "");
 
-        // 幂等：以客户端 msgId 为 key 去重（同一客户端 msgId 不会被处理两次）
-        // 兼容：客户端没传时退化为按服务端 msgId 去重
         std::string dedupKey = clientMsgId.empty() ? msgId : clientMsgId;
         if (isDuplicate(dedupKey)) {
             session->sendText(Protocol::makeAck(msgId, clientMsgId));
             return;
+        }
+
+        // Phase 5.2 内容审核（在去重之后、入库之前）
+        if (moderation_) {
+            auto mod = moderation_->checkText(content);
+            // 审计日志（不阻塞）
+            moderation_->logModeration(fromUserId, "text", content,
+                                         mod.result, mod.reason, mod.matchedWords);
+            if (mod.result == ContentModerationService::Block) {
+                session->sendText(Protocol::makeError(
+                    "message blocked: " + mod.reason));
+                return;
+            }
+            // Review：允许发送但前端可显示标记（这里简化为继续发，审计已记）
         }
 
         int64_t timestamp = Protocol::nowMs();
@@ -1582,6 +1598,18 @@ private:
         if (isDuplicate(dedupKey)) {
             session->sendText(Protocol::makeAck(msgId, clientMsgId));
             return;
+        }
+
+        // Phase 5.2 内容审核
+        if (moderation_) {
+            auto mod = moderation_->checkText(content);
+            moderation_->logModeration(fromUserId, "text", content,
+                                         mod.result, mod.reason, mod.matchedWords);
+            if (mod.result == ContentModerationService::Block) {
+                session->sendText(Protocol::makeError(
+                    "group message blocked: " + mod.reason));
+                return;
+            }
         }
 
         int64_t timestamp = Protocol::nowMs();
@@ -2197,6 +2225,7 @@ private:
     AuditService auditService_;
     std::shared_ptr<DeviceService> deviceService_;  ///< Phase 3.3
     std::shared_ptr<PushService> pushService_;      ///< Phase 5.1
+    std::shared_ptr<ContentModerationService> moderation_;  ///< Phase 5.2
     JwtRevocationService jwtRevocation_;  ///< jti 黑名单吊销服务
     std::unique_ptr<ESClient> esClient_;  ///< ES 客户端（Phase 4.4）；nullptr=未启用
 
