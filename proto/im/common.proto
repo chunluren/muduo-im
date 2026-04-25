@@ -1,0 +1,38 @@
+syntax = "proto3";
+
+package im;
+
+option cc_enable_arenas = true;
+option go_package = "github.com/chunluren/muduo-im/proto/im;im";
+
+// 通用消息信封：Gateway/Logic 之间所有 RPC 都包此结构
+message Envelope {
+  string trace_id   = 1;     // 用于全链路追踪
+  string instance   = 2;     // 来源 instance_id（gateway-1 / logic-2 ...）
+  int64  ts_ms      = 3;     // 发出时刻（ms），用于延迟监控
+  string routing_key = 4;    // 一致性 hash 键（通常 = uid 或 conv_id）
+}
+
+// WebSocket 客户端身份
+message ClientIdentity {
+  int64  uid        = 1;
+  string device_id  = 2;
+  string conn_id    = 3;     // gateway 内部连接句柄 ID（uniq per gateway）
+  string remote_ip  = 4;
+}
+
+// 错误码
+enum StatusCode {
+  OK              = 0;
+  INVALID         = 1;
+  UNAUTH          = 2;
+  NOT_FOUND       = 3;
+  RATE_LIMITED    = 4;
+  INTERNAL        = 5;
+  UNAVAILABLE     = 6;
+}
+
+message Status {
+  StatusCode code   = 1;
+  string     msg    = 2;
+}

@@ -1,0 +1,47 @@
+syntax = "proto3";
+
+package im;
+
+import "im/common.proto";
+
+option cc_enable_arenas = true;
+option go_package = "github.com/chunluren/muduo-im/proto/im;im";
+
+// RegistryService：服务发现 + 一致性 hash 路由
+//
+// 简化策略（Plan B 范围内）：
+//   - logic 实例启动时 Register；周期 KeepAlive；崩溃后 TTL 过期自动剔除
+//   - gateway 启动时 List + Subscribe，本地缓存 logic 列表，按 routing_key 一致性 hash 选实例
+//   - Watch 是 server-stream，registry 推增删事件
+//   - 实现：单进程 in-memory（双 gateway/logic 联调够用）；生产换 etcd/Consul 即可
+service RegistryService {
+  rpc Register   (RegisterRequest)   returns (RegisterResponse);
+  rpc Deregister (DeregisterRequest) returns (DeregisterResponse);
+  rpc KeepAlive  (KeepAliveRequest)  returns (KeepAliveResponse);
+  rpc List       (ListRequest)       returns (ListResponse);
+  rpc Watch      (WatchRequest)      returns (stream WatchEvent);
+}
+
+message Endpoint {
+  string instance_id = 1;
+  string service     = 2;   // "logic" / "gateway"
+  string addr        = 3;   // host:port
+  uint32 weight      = 4;   // 一致性 hash 虚拟节点数
+  map<string, string> labels = 5;  // zone, version ...
+}
+
+message RegisterRequest    { Endpoint ep = 1; }
+message RegisterResponse   { Status status = 1; int64 lease_id = 2; }
+message DeregisterRequest  { string instance_id = 1; }
+message DeregisterResponse { Status status = 1; }
+message KeepAliveRequest   { int64 lease_id = 1; }
+message KeepAliveResponse  { Status status = 1; int32 ttl_remaining = 2; }
+message ListRequest        { string service = 1; }
+message ListResponse       { repeated Endpoint endpoints = 1; }
+message WatchRequest       { string service = 1; }
+
+message WatchEvent {
+  enum Type { ADDED = 0; REMOVED = 1; UPDATED = 2; }
+  Type type = 1;
+  Endpoint ep = 2;
+}
