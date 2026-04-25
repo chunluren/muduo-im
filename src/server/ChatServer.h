@@ -33,6 +33,8 @@
 #include "server/MessageService.h"
 #include "server/JwtRevocationService.h"
 #include "server/ESClient.h"
+#include "server/DeviceService.h"
+#include "server/PushService.h"
 #include "http/HttpServer.h"
 #include "http/MultipartParser.h"
 #include "websocket/WebSocketServer.h"
@@ -96,6 +98,8 @@ public:
         , messageService_(mysqlPool_)
         , onlineManager_(redisPool_)
         , auditService_(mysqlPool_)
+        , deviceService_(std::make_shared<DeviceService>(mysqlPool_))
+        , pushService_(std::make_shared<PushService>(redisPool_, deviceService_))
         , jwtRevocation_(redisPool_)
         , jwt_(jwtSecret)
         , jwtSecret_(jwtSecret)
@@ -321,6 +325,11 @@ private:
         httpServer_.POST("/api/user/password", [this](const HttpRequest& req, HttpResponse& resp) { handleChangePassword(req, resp); });
         httpServer_.POST("/api/user/delete",   [this](const HttpRequest& req, HttpResponse& resp) { handleDeleteAccount(req, resp); });
         httpServer_.POST("/api/logout",        [this](const HttpRequest& req, HttpResponse& resp) { handleLogout(req, resp); });
+        // Phase 3.3 设备管理
+        httpServer_.POST("/api/device/register",  [this](const HttpRequest& req, HttpResponse& resp) { handleDeviceRegister(req, resp); });
+        httpServer_.GET ("/api/device/list",       [this](const HttpRequest& req, HttpResponse& resp) { handleDeviceList(req, resp); });
+        httpServer_.POST("/api/device/remove",     [this](const HttpRequest& req, HttpResponse& resp) { handleDeviceRemove(req, resp); });
+        httpServer_.POST("/api/device/kick",       [this](const HttpRequest& req, HttpResponse& resp) { handleDeviceKick(req, resp); });
 
         // ---- File upload ----
         httpServer_.POST("/api/upload", [this](const HttpRequest& req, HttpResponse& resp) { handleUpload(req, resp); });
@@ -732,6 +741,68 @@ private:
             auditService_.log(userId, "delete_account", "", getClientIp(req));
         }
         resp.setJson(result.dump());
+    }
+
+    // ==================== Device Management (Phase 3.3) ====================
+
+    /// POST /api/device/register
+    /// body: {device_id, device_type, os_version?, app_version?, apns_token?, fcm_token?}
+    void handleDeviceRegister(const HttpRequest& req, HttpResponse& resp) {
+        int64_t userId = requireAuth(req, resp);
+        if (userId < 0) return;
+        json j;
+        if (!parseJsonBody(req, resp, j)) return;
+        std::string deviceId = j.value("device_id", "");
+        if (deviceId.empty()) {
+            resp = HttpResponse::badRequest("missing device_id");
+            return;
+        }
+        bool ok = deviceService_->registerDevice(
+            userId, deviceId,
+            j.value("device_type", "web"),
+            j.value("os_version", ""),
+            j.value("app_version", ""),
+            j.value("apns_token", ""),
+            j.value("fcm_token", ""));
+        resp.setJson(json({{"success", ok}}).dump());
+    }
+
+    /// GET /api/device/list
+    void handleDeviceList(const HttpRequest& req, HttpResponse& resp) {
+        int64_t userId = requireAuth(req, resp);
+        if (userId < 0) return;
+        json devices = deviceService_->listDevices(userId);
+        resp.setJson(json({{"success", true}, {"devices", devices}}).dump());
+    }
+
+    /// POST /api/device/remove  body: {device_id}
+    void handleDeviceRemove(const HttpRequest& req, HttpResponse& resp) {
+        int64_t userId = requireAuth(req, resp);
+        if (userId < 0) return;
+        json j;
+        if (!parseJsonBody(req, resp, j)) return;
+        std::string deviceId = j.value("device_id", "");
+        if (deviceId.empty()) {
+            resp = HttpResponse::badRequest("missing device_id");
+            return;
+        }
+        bool ok = deviceService_->removeDevice(userId, deviceId);
+        resp.setJson(json({{"success", ok}}).dump());
+    }
+
+    /// POST /api/device/kick  body: {device_id} — 踢掉自己其他设备的当前 session
+    void handleDeviceKick(const HttpRequest& req, HttpResponse& resp) {
+        int64_t userId = requireAuth(req, resp);
+        if (userId < 0) return;
+        json j;
+        if (!parseJsonBody(req, resp, j)) return;
+        std::string deviceId = j.value("device_id", "");
+        if (deviceId.empty()) {
+            resp = HttpResponse::badRequest("missing device_id");
+            return;
+        }
+        bool kicked = onlineManager_.kickDevice(userId, deviceId);
+        resp.setJson(json({{"success", kicked}}).dump());
     }
 
     /// POST /api/logout — 主动登出，将当前 token 的 jti 加入 Redis 黑名单
@@ -1368,6 +1439,9 @@ private:
                 handleClientAck(session, j, userId);
             } else if (type == Protocol::READ_ACK) {
                 handleReadAck(session, j, userId);
+            } else if (type == "read_sync") {
+                // Phase 3.2 多端已读同步入口（C→S 上报后 S 主动推 read_sync 给同 uid 其他端）
+                handleReadAck(session, j, userId);
             } else {
                 session->sendText(Protocol::makeError("unknown message type"));
             }
@@ -1467,8 +1541,16 @@ private:
         }
 
         if (delivered == 0) {
-            // Recipient offline: increment unread count
+            // Recipient offline: increment unread count + 触发离线推送（Phase 5.1）
             incrementUnread(toUserId, fromUserId);
+            if (pushService_) {
+                pushService_->notifyOffline(
+                    toUserId,
+                    "新消息",  // 隐私优先：title 不带发送者名
+                    content.size() > 50 ? content.substr(0, 50) + "..." : content,
+                    json({{"msgId", msgId}, {"from", std::to_string(fromUserId)},
+                          {"convType", "private"}}));
+            }
         }
     }
 
@@ -1896,7 +1978,7 @@ private:
         (void)isGroup;
     }
 
-    void handleReadAck(const WsSessionPtr& /*session*/, const json& j, int64_t fromUserId) {
+    void handleReadAck(const WsSessionPtr& session, const json& j, int64_t fromUserId) {
         std::string toStr = j.value("to", "");
         std::string lastMsgId = j.value("lastMsgId", "");
         if (toStr.empty() || lastMsgId.empty()) return;
@@ -1904,21 +1986,36 @@ private:
         int64_t toUserId = 0;
         try { toUserId = std::stoll(toStr); } catch (...) {}
 
-        // Clear unread count: the reader (fromUserId) has read messages from toUserId
+        // Clear unread count
         clearUnread(fromUserId, toUserId);
 
         // Persist read position in Redis
         if (redisPool_) {
             auto conn = redisPool_->acquire(1000);
             if (conn && conn->valid()) {
-                // read_pos:{readerId}:{senderId} = lastMsgId
                 conn->set("read_pos:" + std::to_string(fromUserId) + ":" + toStr, lastMsgId);
                 redisPool_->release(std::move(conn));
             }
         }
 
-        // Forward read receipt to the original sender
+        // Forward read receipt to the original sender (multi-device broadcast)
         broadcastToUser(toUserId, Protocol::makeReadAck(fromUserId, toUserId, lastMsgId));
+
+        // Phase 3.2 多端已读同步：推 read_sync 给同 uid 其他设备
+        // 让用户在手机点开消息后，PC 端的未读也清零
+        json sync = {
+            {"type", "read_sync"},
+            {"convType", "private"},
+            {"convId", std::to_string(toUserId)},
+            {"lastMsgId", lastMsgId}
+        };
+        std::string syncMsg = sync.dump();
+        std::string fromDevice = session
+            ? session->getContext("deviceId", OnlineManager::kDefaultDevice)
+            : OnlineManager::kDefaultDevice;
+        for (auto& s : onlineManager_.getOtherSessions(fromUserId, fromDevice)) {
+            s->sendText(syncMsg);
+        }
     }
 
     void handleTyping(const WsSessionPtr& /*session*/, const json& j, int64_t fromUserId) {
@@ -2098,6 +2195,8 @@ private:
     MessageService messageService_;
     OnlineManager onlineManager_;
     AuditService auditService_;
+    std::shared_ptr<DeviceService> deviceService_;  ///< Phase 3.3
+    std::shared_ptr<PushService> pushService_;      ///< Phase 5.1
     JwtRevocationService jwtRevocation_;  ///< jti 黑名单吊销服务
     std::unique_ptr<ESClient> esClient_;  ///< ES 客户端（Phase 4.4）；nullptr=未启用
 
