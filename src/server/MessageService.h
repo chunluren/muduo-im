@@ -79,12 +79,16 @@ public:
      * @return true 存储成功；false 失败
      */
     bool saveGroupMessage(const std::string& msgId, int64_t groupId, int64_t from,
-                          const std::string& content, int64_t timestamp) {
+                          const std::string& content, int64_t timestamp,
+                          const std::string& mentionsJson = "") {
         auto conn = db_->acquire(3000);
         if (!conn || !conn->valid()) return false;
 
         // 使用 PreparedStatement 防 SQL 注入
-        PreparedStatement stmt(conn, "INSERT INTO group_messages (msg_id, group_id, from_user, content, timestamp) VALUES (?, ?, ?, ?, ?)");
+        // mentions 列：传空串则插 NULL，否则插传入的 JSON 字符串（如 "[12345,67890]"）
+        const char* sql = "INSERT INTO group_messages (msg_id, group_id, from_user, content, timestamp, mentions) "
+                          "VALUES (?, ?, ?, ?, ?, CASE WHEN ? = '' THEN NULL ELSE CAST(? AS JSON) END)";
+        PreparedStatement stmt(conn, sql);
         if (!stmt.valid()) {
             db_->release(std::move(conn));
             return false;
@@ -94,6 +98,8 @@ public:
         stmt.bindInt64(3, from);
         stmt.bindString(4, content);
         stmt.bindInt64(5, timestamp);
+        stmt.bindString(6, mentionsJson);  // 用于 CASE 判断
+        stmt.bindString(7, mentionsJson);  // 用于 CAST AS JSON
         bool ok = stmt.execute() && stmt.affectedRows() > 0;
         db_->release(std::move(conn));
         return ok;

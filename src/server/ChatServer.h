@@ -934,15 +934,56 @@ private:
 
         int64_t timestamp = Protocol::nowMs();
 
+        // 解析并校验 mentions（@ 提醒）
+        // 客户端传 ["12345","67890"] 字符串数组，服务端：
+        // 1. 转 int64 集合
+        // 2. 过滤非群成员（防止 @ 群外人员）+ 自己（防自@）
+        // 3. 序列化为 JSON 数组持久化 + 推送时带 mention 标志
+        std::vector<int64_t> mentions;
+        std::string mentionsJsonStr;
+        if (j.contains("mentions") && j["mentions"].is_array()) {
+            auto memberSet = groupService_.getMemberIds(groupId);
+            std::unordered_set<int64_t> memberLookup(memberSet.begin(), memberSet.end());
+            for (auto& m : j["mentions"]) {
+                int64_t uid = 0;
+                try {
+                    if (m.is_string()) uid = std::stoll(m.get<std::string>());
+                    else if (m.is_number_integer()) uid = m.get<int64_t>();
+                } catch (...) { continue; }
+                if (uid <= 0 || uid == fromUserId) continue;
+                if (!memberLookup.count(uid)) continue;
+                mentions.push_back(uid);
+            }
+            if (!mentions.empty()) {
+                json arr = json::array();
+                for (auto uid : mentions) arr.push_back(uid);
+                mentionsJsonStr = arr.dump();
+            }
+        }
+
         // Queue message (Redis) or direct save (fallback)
         if (redisPool_) {
             json queueItem = {
                 {"_type", "group"}, {"msgId", msgId}, {"groupId", groupId},
                 {"from", fromUserId}, {"content", content}, {"timestamp", timestamp}
             };
+            if (!mentionsJsonStr.empty()) queueItem["mentions"] = mentionsJsonStr;
             queueMessage(queueItem.dump());
         } else {
-            messageService_.saveGroupMessage(msgId, groupId, fromUserId, content, timestamp);
+            messageService_.saveGroupMessage(msgId, groupId, fromUserId, content, timestamp, mentionsJsonStr);
+        }
+
+        // 被 @ 用户额外计入 unread_mentions（区分普通未读）
+        // 与现有 unread 保持一致：扁平 key `unread_mentions:{uid}:{groupId}` + incr
+        if (!mentions.empty() && redisPool_) {
+            auto rconn = redisPool_->acquire(500);
+            if (rconn && rconn->valid()) {
+                for (auto uid : mentions) {
+                    rconn->incr("unread_mentions:" + std::to_string(uid)
+                                 + ":" + std::to_string(groupId));
+                }
+                redisPool_->release(std::move(rconn));
+            }
         }
 
         // ACK 透传 clientMsgId
@@ -950,21 +991,29 @@ private:
 
         // Forward to all online group members (skip sender)
         auto memberIds = groupService_.getMemberIds(groupId);
-        json fwd;
-        fwd["type"] = Protocol::GROUP_MSG;
-        fwd["from"] = std::to_string(fromUserId);
-        fwd["to"] = std::to_string(groupId);
-        fwd["content"] = content;
-        fwd["msgId"] = msgId;
-        fwd["timestamp"] = timestamp;
-        if (!replyTo.empty()) fwd["replyTo"] = replyTo;
-        std::string groupMsg = fwd.dump();
+        std::unordered_set<int64_t> mentionSet(mentions.begin(), mentions.end());
         for (int64_t memberId : memberIds) {
             if (memberId == fromUserId) continue;
             auto memberSession = onlineManager_.getSession(memberId);
-            if (memberSession) {
-                memberSession->sendText(groupMsg);
+            if (!memberSession) continue;
+
+            // 每个接收者构造独立 fwd（mention 字段因人而异）
+            json fwd;
+            fwd["type"] = Protocol::GROUP_MSG;
+            fwd["from"] = std::to_string(fromUserId);
+            fwd["to"] = std::to_string(groupId);
+            fwd["content"] = content;
+            fwd["msgId"] = msgId;
+            fwd["timestamp"] = timestamp;
+            if (!replyTo.empty()) fwd["replyTo"] = replyTo;
+            if (!mentions.empty()) {
+                json arr = json::array();
+                for (auto uid : mentions) arr.push_back(std::to_string(uid));
+                fwd["mentions"] = arr;
             }
+            // 仅当前接收者被 @ 时标 mention=true（用于客户端 UI 高亮 + 强提示）
+            if (mentionSet.count(memberId)) fwd["mention"] = true;
+            memberSession->sendText(fwd.dump());
         }
     }
 
@@ -1131,7 +1180,8 @@ private:
             messageService_.saveGroupMessage(
                 j.value("msgId", ""), j.value("groupId", (int64_t)0),
                 j.value("from", (int64_t)0), j.value("content", ""),
-                j.value("timestamp", (int64_t)0));
+                j.value("timestamp", (int64_t)0),
+                j.value("mentions", ""));
         }
     }
 
@@ -1178,7 +1228,8 @@ private:
                     ok = messageService_.saveGroupMessage(
                         j.value("msgId", ""), j.value("groupId", (int64_t)0),
                         j.value("from", (int64_t)0), j.value("content", ""),
-                        j.value("timestamp", (int64_t)0));
+                        j.value("timestamp", (int64_t)0),
+                        j.value("mentions", ""));
                 }
             } catch (...) {
                 ok = false;
