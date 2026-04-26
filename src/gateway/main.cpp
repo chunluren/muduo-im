@@ -6,6 +6,7 @@
  * 接 logic 的 PushCommand 反向推送给本地 ws session。
  */
 #include "LogicClient.h"
+#include "LogicClientPool.h"
 #include "common/Logging.h"
 #include "net/EventLoop.h"
 #include "websocket/WebSocketServer.h"
@@ -86,22 +87,35 @@ int main(int argc, char* argv[]) {
     std::string wsAddr    = "0.0.0.0";
     uint16_t    wsPort    = 9091;
     std::string logicAddr = "127.0.0.1:9100";
+    std::string registryAddr;
 
     if (const char* e = std::getenv("MUDUO_IM_GATEWAY_WS_PORT")) wsPort = (uint16_t)std::atoi(e);
     if (const char* e = std::getenv("MUDUO_IM_LOGIC_ADDR"))      logicAddr = e;
+    if (const char* e = std::getenv("MUDUO_IM_REGISTRY_ADDR"))   registryAddr = e;
     if (argc > 1) wsPort = (uint16_t)std::atoi(argv[1]);
     if (argc > 2) logicAddr = argv[2];
 
     std::string gatewayId = makeGatewayId();
-    LogicClient logic(logicAddr, gatewayId);
     LocalPresence presence;
-
-    logic.setPushCallback([&presence](int64_t uid, const std::string& payload) {
+    auto pushCb = [&presence](int64_t uid, const std::string& payload) {
         bool ok = presence.sendToUser(uid, payload);
         std::cerr << "[gateway] push uid=" << uid
                   << (ok ? " delivered" : " no_local_session") << "\n";
-    });
-    logic.start();
+    };
+
+    // 两种模式：有 registry 走 pool（多 logic + 一致性 hash）；否则走单 logic
+    std::unique_ptr<LogicClientPool> pool;
+    std::unique_ptr<LogicClient> singleLogic;
+    if (!registryAddr.empty()) {
+        pool.reset(new LogicClientPool(registryAddr, gatewayId, pushCb));
+        pool->start();
+        std::cerr << "[gateway] using registry " << registryAddr << "\n";
+    } else {
+        singleLogic.reset(new LogicClient(logicAddr, gatewayId));
+        singleLogic->setPushCallback(pushCb);
+        singleLogic->start();
+        std::cerr << "[gateway] using single logic " << logicAddr << "\n";
+    }
 
     EventLoop loop;
     g_loop = &loop;
@@ -121,7 +135,24 @@ int main(int argc, char* argv[]) {
             return it != kv.end() && std::atoll(it->second.c_str()) > 0;
         });
 
-    wsServer.setConnectionHandler([&logic, &presence](const WsSessionPtr& session) {
+    auto notifyOpen = [&](int64_t uid, const std::string& dev) {
+        if (pool) pool->notifyConnOpen(uid, dev);
+        else singleLogic->notifyConnOpen(uid, dev);
+    };
+    auto notifyClose = [&](int64_t uid, const std::string& dev) {
+        if (pool) pool->notifyConnClose(uid, dev);
+        else singleLogic->notifyConnClose(uid, dev);
+    };
+    auto callHandleMessage = [&](int64_t uid, const std::string& dev,
+                                 const std::string& connId, const std::string& payload,
+                                 std::string* reply) {
+        if (pool) {
+            return pool->handleMessage(uid, dev, connId, std::to_string(uid), payload, reply);
+        }
+        return singleLogic->handleMessage(uid, dev, connId, payload, reply);
+    };
+
+    wsServer.setConnectionHandler([&](const WsSessionPtr& session) {
         std::string path = session->getContext("path");
         auto kv = parseQuery(path);
         std::string uidStr = kv.count("uid") ? kv["uid"] : "0";
@@ -130,13 +161,13 @@ int main(int argc, char* argv[]) {
         session->setContext("uid", uidStr);
         session->setContext("device", dev);
         presence.add(uid, session);
-        logic.notifyConnOpen(uid, dev);
+        notifyOpen(uid, dev);
         std::cerr << "[gateway] open uid=" << uid << " dev=" << dev << "\n";
     });
 
     std::atomic<uint64_t> reqCount{0};
 
-    wsServer.setMessageHandler([&logic, &reqCount](const WsSessionPtr& session, const WsMessage& msg) {
+    wsServer.setMessageHandler([&](const WsSessionPtr& session, const WsMessage& msg) {
         if (!msg.isText()) return;
         std::string uidStr = session->getContext("uid", "0");
         std::string dev    = session->getContext("device", "default");
@@ -144,7 +175,7 @@ int main(int argc, char* argv[]) {
         std::string connId = "g-" + uidStr + "-" + std::to_string(reqCount.fetch_add(1));
 
         std::string reply;
-        auto st = logic.handleMessage(uid, dev, connId, msg.text(), &reply);
+        auto st = callHandleMessage(uid, dev, connId, msg.text(), &reply);
         if (!st.ok()) {
             std::cerr << "[gateway] logic RPC failed: " << st.error_code()
                       << " " << st.error_message() << "\n";
@@ -154,12 +185,12 @@ int main(int argc, char* argv[]) {
         if (!reply.empty()) session->sendText(reply);
     });
 
-    wsServer.setCloseHandler([&logic, &presence](const WsSessionPtr& session) {
+    wsServer.setCloseHandler([&](const WsSessionPtr& session) {
         std::string uidStr = session->getContext("uid", "0");
         std::string dev    = session->getContext("device", "default");
         int64_t uid = std::atoll(uidStr.c_str());
         presence.remove(uid, session);
-        logic.notifyConnClose(uid, dev);
+        notifyClose(uid, dev);
         std::cerr << "[gateway] close uid=" << uid << "\n";
     });
 
@@ -172,6 +203,7 @@ int main(int argc, char* argv[]) {
               " logic=" + logicAddr);
 
     loop.loop();
-    logic.stop();
+    if (pool) pool->stop();
+    if (singleLogic) singleLogic->stop();
     return 0;
 }
