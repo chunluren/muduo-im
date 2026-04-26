@@ -1,0 +1,106 @@
+version: '3.8'
+
+# Phase 1.2 gRPC 拆分拓扑：
+#   registry → 2 logic → 2 gateway → ws clients
+#
+# 用法（在仓库根目录）：
+#   docker compose -f deploy/grpc/docker-compose.yml up --build
+#
+# 注意：build context 是仓库根（"context: ../.."），Dockerfile 在 deploy/grpc/Dockerfile
+
+services:
+  mysql:
+    image: mysql:8.0
+    environment:
+      MYSQL_ALLOW_EMPTY_PASSWORD: "yes"
+      MYSQL_DATABASE: muduo_im
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ../../sql/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:6-alpine
+    command: redis-server --appendonly yes --appendfsync everysec
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  registry:
+    build:
+      context: ../..
+      dockerfile: deploy/grpc/Dockerfile
+    image: muduo-im-grpc:latest
+    command: ["/app/muduo-im-registry", "0.0.0.0:9200"]
+    ports:
+      - "9200:9200"
+
+  logic-a:
+    image: muduo-im-grpc:latest
+    command: ["/app/muduo-im-logic", "0.0.0.0:9100", "/app/config.ini"]
+    environment:
+      MUDUO_IM_WORKER_ID: "11"
+      MUDUO_IM_REGISTRY_ADDR: "registry:9200"
+      MUDUO_IM_LOGIC_INSTANCE_ID: "logic-A"
+      MUDUO_IM_LOGIC_ADVERTISE_HOST: "logic-a"
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      registry:
+        condition: service_started
+
+  logic-b:
+    image: muduo-im-grpc:latest
+    command: ["/app/muduo-im-logic", "0.0.0.0:9101", "/app/config.ini"]
+    environment:
+      MUDUO_IM_WORKER_ID: "12"
+      MUDUO_IM_REGISTRY_ADDR: "registry:9200"
+      MUDUO_IM_LOGIC_INSTANCE_ID: "logic-B"
+      MUDUO_IM_LOGIC_ADVERTISE_HOST: "logic-b"
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      registry:
+        condition: service_started
+
+  gateway-a:
+    image: muduo-im-grpc:latest
+    command: ["/app/muduo-im-gateway", "9091"]
+    environment:
+      MUDUO_IM_GATEWAY_ID: "gw-A"
+      MUDUO_IM_REGISTRY_ADDR: "registry:9200"
+    ports:
+      - "9091:9091"
+    depends_on:
+      - registry
+      - logic-a
+      - logic-b
+
+  gateway-b:
+    image: muduo-im-grpc:latest
+    command: ["/app/muduo-im-gateway", "9092"]
+    environment:
+      MUDUO_IM_GATEWAY_ID: "gw-B"
+      MUDUO_IM_REGISTRY_ADDR: "registry:9200"
+    ports:
+      - "9092:9092"
+    depends_on:
+      - registry
+      - logic-a
+      - logic-b
+
+volumes:
+  mysql_data:
+  redis_data:
