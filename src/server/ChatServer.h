@@ -44,6 +44,7 @@
 #include "pool/MySQLPool.h"
 #include "pool/RedisPool.h"
 #include "util/CircuitBreaker.h"
+#include "util/ThreadPool.h"
 #include "net/EventLoop.h"
 #include "net/InetAddress.h"
 #include <nlohmann/json.hpp>
@@ -109,6 +110,7 @@ public:
         , jwtSecret_(jwtSecret)
         , mysqlBreaker_(5, 2, 10)   // 连续 5 次失败打开，2 次成功恢复，10 秒超时
         , redisBreaker_(5, 2, 10)
+        , workerPool_(8, 10240, "chat-worker")  // Phase 4.0：把含 DB 调用的 handler 切走
     {
         setupHttpRoutes();
         setupWebSocket();
@@ -209,6 +211,10 @@ public:
         // Phase 5.2: 启动审核词库热更新
         if (moderation_) moderation_->startReloadThread(60);
 
+        // Phase 4.0: 业务 worker pool（含 DB / Redis 同步调用的 handler 切到这里跑，
+        // 避免阻塞 IO 线程）
+        workerPool_.start();
+
         httpServer_.enableCors();
         httpServer_.useRateLimit(100); // 100 req/sec per IP
         httpServer_.enableMetrics();  // 暴露 GET /metrics
@@ -239,7 +245,10 @@ public:
         httpServer_.shutdown(2.0);
         wsServer_.shutdown(2.0);
 
-        // 4. 退出 EventLoop
+        // 4. 停 worker pool（drain 已入队任务）
+        workerPool_.stop();
+
+        // 5. 退出 EventLoop
         loop_->quit();
     }
 
@@ -1513,6 +1522,7 @@ private:
     // ==================== Message Handlers ====================
 
     void handlePrivateMessage(const WsSessionPtr& session, const json& j, int64_t fromUserId) {
+        // ---- 快路径（IO 线程）：纯内存校验 + dedup + moderation 静态扫描 ----
         std::string toStr = j.value("to", "");
         std::string content = j.value("content", "");
         std::string replyTo = j.value("replyTo", "");
@@ -1542,68 +1552,88 @@ private:
             return;
         }
 
-        // Phase 5.2 内容审核（在去重之后、入库之前）
+        // 内容审核：checkText 是 AC 自动机，纯 CPU，留 IO 线程跑（≤1ms）
+        ContentModerationService::Result modResult = ContentModerationService::Pass;
+        std::string modReason;
+        std::vector<std::string> modWords;
         if (moderation_) {
             auto mod = moderation_->checkText(content);
-            // 审计日志（不阻塞）
-            moderation_->logModeration(fromUserId, "text", content,
-                                         mod.result, mod.reason, mod.matchedWords);
-            if (mod.result == ContentModerationService::Block) {
+            modResult = mod.result;
+            modReason = mod.reason;
+            modWords  = mod.matchedWords;
+            if (modResult == ContentModerationService::Block) {
                 session->sendText(Protocol::makeError(
-                    "message blocked: " + mod.reason));
+                    "message blocked: " + modReason));
                 return;
             }
-            // Review：允许发送但前端可显示标记（这里简化为继续发，审计已记）
         }
 
         int64_t timestamp = Protocol::nowMs();
-
-        // Queue message (Redis) or direct save (fallback)
-        if (redisPool_) {
-            json queueItem = {
-                {"_type", "private"}, {"msgId", msgId}, {"from", fromUserId},
-                {"to", toUserId}, {"content", content}, {"timestamp", timestamp}
-            };
-            queueMessage(queueItem.dump());
-        } else {
-            messageService_.savePrivateMessage(msgId, fromUserId, toUserId, content, timestamp);
-        }
-
-        // ACK 把 clientMsgId 透传回去，前端用它定位 DOM 节点把 msgId 替换为服务端权威 msgId
-        session->sendText(Protocol::makeAck(msgId, clientMsgId));
-
-        // Forward to recipient — Phase 3.1 多端：所有设备都推送
-        json fwd;
-        fwd["type"] = Protocol::MSG;
-        fwd["from"] = std::to_string(fromUserId);
-        fwd["to"] = std::to_string(toUserId);
-        fwd["content"] = content;
-        fwd["msgId"] = msgId;
-        fwd["timestamp"] = timestamp;
-        if (!replyTo.empty()) fwd["replyTo"] = replyTo;
-        int delivered = broadcastToUser(toUserId, fwd.dump());
-
-        // 多端同步：推给发送方的其他设备（跳过发起的 session）
         std::string senderDevice = session->getContext("deviceId", OnlineManager::kDefaultDevice);
-        for (auto& s : onlineManager_.getOtherSessions(fromUserId, senderDevice)) {
-            s->sendText(fwd.dump());
-        }
 
-        if (delivered == 0) {
-            // Phase 1.3: 本地无 session → 尝试跨实例路由
-            int crossDelivered = tryCrossInstanceBroadcast(toUserId, fwd.dump());
-            if (crossDelivered == 0) {
-                // 真正离线：incr unread + 触发离线推送
-                incrementUnread(toUserId, fromUserId);
-                if (pushService_) {
-                    pushService_->notifyOffline(
-                        toUserId,
-                        "新消息",
-                        content.size() > 50 ? content.substr(0, 50) + "..." : content,
-                        json({{"msgId", msgId}, {"from", std::to_string(fromUserId)},
-                              {"convType", "private"}}));
+        // ---- 慢路径（worker pool）：DB / Redis / 跨实例 PUBLISH / 离线推送 ----
+        // 必须按 fromUserId 亲和到固定 worker，保证同一发送方的消息相对顺序
+        bool ok = workerPool_.submitAffinity(
+            static_cast<uint64_t>(fromUserId),
+            [this, session, msgId, clientMsgId, fromUserId, toUserId,
+             content, replyTo, timestamp, modResult, modReason, modWords,
+             senderDevice]() mutable {
+                // 审计 moderation（DB 写）
+                if (moderation_ && modResult != ContentModerationService::Pass) {
+                    moderation_->logModeration(fromUserId, "text", content,
+                                                modResult, modReason, modWords);
                 }
-            }
+
+                // 持久化（Redis 队列首选；否则直写 MySQL）
+                if (redisPool_) {
+                    json queueItem = {
+                        {"_type", "private"}, {"msgId", msgId}, {"from", fromUserId},
+                        {"to", toUserId}, {"content", content}, {"timestamp", timestamp}
+                    };
+                    queueMessage(queueItem.dump());
+                } else {
+                    messageService_.savePrivateMessage(
+                        msgId, fromUserId, toUserId, content, timestamp);
+                }
+
+                // ACK（sendText 是 loop-safe，会自动 runInLoop 切回 IO 线程）
+                session->sendText(Protocol::makeAck(msgId, clientMsgId));
+
+                // 转发给收件人 — 多设备：所有 device 都推
+                json fwd;
+                fwd["type"] = Protocol::MSG;
+                fwd["from"] = std::to_string(fromUserId);
+                fwd["to"]   = std::to_string(toUserId);
+                fwd["content"] = content;
+                fwd["msgId"] = msgId;
+                fwd["timestamp"] = timestamp;
+                if (!replyTo.empty()) fwd["replyTo"] = replyTo;
+                int delivered = broadcastToUser(toUserId, fwd.dump());
+
+                // 多端同步：推给发送方的其他设备
+                for (auto& s : onlineManager_.getOtherSessions(fromUserId, senderDevice)) {
+                    s->sendText(fwd.dump());
+                }
+
+                if (delivered == 0) {
+                    int crossDelivered = tryCrossInstanceBroadcast(toUserId, fwd.dump());
+                    if (crossDelivered == 0) {
+                        incrementUnread(toUserId, fromUserId);
+                        if (pushService_) {
+                            pushService_->notifyOffline(
+                                toUserId,
+                                "新消息",
+                                content.size() > 50 ? content.substr(0, 50) + "..." : content,
+                                json({{"msgId", msgId}, {"from", std::to_string(fromUserId)},
+                                      {"convType", "private"}}));
+                        }
+                    }
+                }
+            });
+
+        if (!ok) {
+            // 队列满 → 背压回落：直接告知客户端服务忙
+            session->sendText(Protocol::makeError("server busy, retry later"));
         }
     }
 
@@ -2280,4 +2310,9 @@ private:
     // 打开时直接短路跳过，超时后进入半开态探测恢复
     CircuitBreaker mysqlBreaker_;
     CircuitBreaker redisBreaker_;
+
+    // Phase 4.0：业务 worker pool。含 DB / 外部 IO 调用的 ws handler 切到这里
+    // 跑（按 fromUserId 亲和保序），避免一次慢查询阻塞整条 subLoop。
+    // 必须放在 mysqlBreaker_ 后；ctor 顺序按声明顺序，destroy 反序。
+    ThreadPool workerPool_;
 };
