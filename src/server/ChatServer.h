@@ -224,8 +224,9 @@ public:
         // Batch flush message queue every 2 seconds
         loop_->runEvery(2.0, [this]() { flushMessageQueue(); });
 
-        // Refresh online status TTL every 10 seconds
-        loop_->runEvery(10.0, [this]() {
+        // 在线状态 TTL 续期：周期 = TTL/6，即使续期任务偶发被 IO 线程慢调用阻塞
+        // 一两轮也不会让 key 过期把自己挤下线。常量在 OnlineManager 里维护。
+        loop_->runEvery(static_cast<double>(OnlineManager::kOnlineRefreshSec), [this]() {
             auto users = onlineManager_.getOnlineUsers();
             for (int64_t uid : users) {
                 onlineManager_.refreshOnline(uid);

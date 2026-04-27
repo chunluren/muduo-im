@@ -36,6 +36,13 @@
 
 class OnlineManager {
 public:
+    /// online:{uid}:{device} 在 Redis 上的 TTL（秒）。配合 ChatServer 中
+    /// 周期为 kOnlineRefreshSec 的续期任务一起用。
+    /// 关键不变量：refresh 间隔 < TTL/3，即使续期任务被偶发卡住也不会自杀。
+    /// 当前 5s : 30s = 1:6，留 6 倍余量。
+    static constexpr int kOnlineTtlSec     = 30;
+    static constexpr int kOnlineRefreshSec = 5;
+
     static constexpr const char* kDefaultDevice = "default";
 
     explicit OnlineManager(std::shared_ptr<RedisPool> redis = nullptr,
@@ -56,7 +63,7 @@ public:
                 // online:{uid}:{device_id} = instance_id（带 TTL）
                 // 拆分 key 是因为 RedisPool 当前不支持 HSET，但语义等价
                 conn->set("online:" + std::to_string(userId) + ":" + dev,
-                           instanceId_, 30);
+                           instanceId_, kOnlineTtlSec);
                 redis_->release(std::move(conn));
             }
         }
@@ -132,7 +139,7 @@ public:
             auto conn = redis_->acquire(1000);
             if (conn && conn->valid()) {
                 for (auto& d : devs) {
-                    conn->expire("online:" + std::to_string(userId) + ":" + d, 30);
+                    conn->expire("online:" + std::to_string(userId) + ":" + d, kOnlineTtlSec);
                 }
                 redis_->release(std::move(conn));
             }
