@@ -107,7 +107,7 @@ if(WITH_GRPC)
     if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/src/logic/main.cpp)
         add_executable(muduo-im-logic src/logic/main.cpp)
         target_link_libraries(muduo-im-logic im_proto mymuduo nlohmann_json::nlohmann_json
-            OpenSSL::SSL OpenSSL::Crypto ${MYSQL_LIBRARY} ${REDIS_LIBRARY} argon2 pthread)
+            OpenSSL::SSL OpenSSL::Crypto ${MYSQL_LIBRARY} ${REDIS_LIBRARY} argon2 z pthread)
     endif()
     if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/src/registry/main.cpp)
         add_executable(muduo-im-registry src/registry/main.cpp)

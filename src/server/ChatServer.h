@@ -534,8 +534,10 @@ private:
         if (result.value("success", false)) {
             int64_t newUserId = result.value("userId", (int64_t)0);
             auditService_.log(newUserId, "register", username, ip);
+            Metrics::instance().increment("chat_register_ok_total");
         } else {
             auditService_.log(0, "register_failed", username, ip, result.value("message", ""));
+            Metrics::instance().increment("chat_register_fail_total");
         }
         resp.setJson(result.dump());
     }
@@ -569,9 +571,11 @@ private:
                 if (result.value("success", false)) {
                     int64_t uid = result.value("userId", (int64_t)0);
                     auditService_.log(uid, "login", username, ip);
+                    Metrics::instance().increment("chat_login_ok_total");
                 } else {
                     auditService_.log(0, "login_failed", username, ip,
                                        result.value("message", ""));
+                    Metrics::instance().increment("chat_login_fail_total");
                 }
 
                 HttpResponse out;
@@ -1632,31 +1636,43 @@ private:
             try { userId = std::stoll(userIdStr); } catch (...) {}
             if (userId <= 0) {
                 session->sendText(Protocol::makeError("not authenticated"));
+                Metrics::instance().increment("chat_ws_unauthenticated_total");
                 return;
             }
 
+            // 业务事件 counter（Phase 5b.6 末）：按 type 维度计数
+            Metrics::instance().increment("chat_ws_messages_total");
+
             if (type == Protocol::MSG) {
+                Metrics::instance().increment("chat_ws_private_msg_total");
                 handlePrivateMessage(session, j, userId);
             } else if (type == Protocol::GROUP_MSG) {
+                Metrics::instance().increment("chat_ws_group_msg_total");
                 handleGroupMessage(session, j, userId);
             } else if (type == Protocol::TYPING) {
                 handleTyping(session, j, userId);
             } else if (type == Protocol::FILE_MSG) {
+                Metrics::instance().increment("chat_ws_file_msg_total");
                 handleFileMessage(session, j, userId);
             } else if (type == Protocol::RECALL) {
+                Metrics::instance().increment("chat_ws_recall_total");
                 handleRecall(session, j, userId);
             } else if (type == Protocol::EDIT) {
+                Metrics::instance().increment("chat_ws_edit_total");
                 handleEdit(session, j, userId);
             } else if (type == Protocol::REACTION) {
+                Metrics::instance().increment("chat_ws_reaction_total");
                 handleReaction(session, j, userId);
             } else if (type == Protocol::CLIENT_ACK) {
                 handleClientAck(session, j, userId);
             } else if (type == Protocol::READ_ACK) {
+                Metrics::instance().increment("chat_ws_read_ack_total");
                 handleReadAck(session, j, userId);
             } else if (type == "read_sync") {
                 // Phase 3.2 多端已读同步入口（C→S 上报后 S 主动推 read_sync 给同 uid 其他端）
                 handleReadAck(session, j, userId);
             } else {
+                Metrics::instance().increment("chat_ws_unknown_type_total");
                 session->sendText(Protocol::makeError("unknown message type"));
             }
         });

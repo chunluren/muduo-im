@@ -12,6 +12,7 @@
 #include "GatewayRegistry.h"
 #include "im/logic.grpc.pb.h"
 #include "server/MessageService.h"
+#include "util/Metrics.h"
 #include "util/Snowflake.h"
 #include <grpcpp/grpcpp.h>
 #include <nlohmann/json.hpp>
@@ -31,6 +32,7 @@ public:
     grpc::Status HandleMessage(grpc::ServerContext* /*ctx*/,
                                const im::MessageRequest* req,
                                im::MessageResponse* resp) override {
+        Metrics::instance().increment("logic_handle_message_total");
         std::cerr << "[logic] HandleMessage trace=" << req->env().trace_id()
                   << " uid=" << req->who().uid()
                   << " device=" << req->who().device_id()

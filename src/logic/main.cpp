@@ -8,8 +8,11 @@
 #include "LogicServiceImpl.h"
 #include "im/registry.grpc.pb.h"
 #include "common/Config.h"
+#include "http/HttpServer.h"
+#include "net/EventLoop.h"
 #include "pool/MySQLPool.h"
 #include "util/EtcdClient.h"
+#include "util/Metrics.h"
 #include "util/Snowflake.h"
 #include <atomic>
 #include <chrono>
@@ -88,14 +91,48 @@ int main(int argc, char* argv[]) {
     }
     std::cerr << "[logic] listening on " << addr << " mysql=" << dbCfg.host << ":" << dbCfg.port << "\n";
 
+    // 实例 id（http /health 标识 + 后面 etcd 注册都用）
+    std::string instanceId = "logic-" + std::to_string(::getpid());
+    if (const char* e = std::getenv("MUDUO_IM_LOGIC_INSTANCE_ID")) instanceId = e;
+
+    // ---- HTTP /metrics + /health（独立 EventLoop + 后台线程）----
+    int healthPort = 9110;
+    if (const char* e = std::getenv("MUDUO_IM_LOGIC_HEALTH_PORT")) healthPort = std::atoi(e);
+    EventLoop httpLoop;
+    HttpServer httpServer(&httpLoop, InetAddress(healthPort), "muduo-im-logic-health");
+    httpServer.setThreadNum(1);
+    httpServer.GET("/health", [&registry, instanceId](const HttpRequest&, HttpResponse& resp) {
+        size_t gw = registry ? registry->gatewayCount() : 0;
+        resp.setStatusCode(HttpStatusCode::OK);
+        resp.setContentType("application/json");
+        resp.setBody("{\"status\":\"healthy\",\"id\":\"" + instanceId +
+                     "\",\"gateway_streams\":" + std::to_string(gw) + "}");
+    });
+    httpServer.enableMetrics();   // /metrics
+    httpServer.start();
+    std::thread httpThread([&httpLoop]{ httpLoop.loop(); });
+    std::cerr << "[logic] /health and /metrics on :" << healthPort << "\n";
+
+    // 周期 gauge：当前 attached gateway 数
+    std::atomic<bool> gaugeRunning{true};
+    std::thread gaugeThread([&gaugeRunning, &registry]() {
+        while (gaugeRunning.load()) {
+            for (int i = 0; i < 50 && gaugeRunning.load(); ++i) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            }
+            if (!gaugeRunning.load()) break;
+            Metrics::instance().gauge("logic_attached_gateways",
+                static_cast<int64_t>(registry ? registry->gatewayCount() : 0));
+        }
+    });
+
     // 自注册：默认走 RegistryService gRPC（W3.D1-D2）；
     // MUDUO_IM_USE_ETCD=1 时走 etcd lease+put 路径（Phase 3C）。
     // regRunning + cv 让 SIGTERM 来时 keepAlive sleep 立即被打断（Phase 4.1A）。
     std::thread regThread;
     std::string regAddr;
     if (const char* e = std::getenv("MUDUO_IM_REGISTRY_ADDR")) regAddr = e;
-    std::string instanceId = "logic-" + std::to_string(::getpid());
-    if (const char* e = std::getenv("MUDUO_IM_LOGIC_INSTANCE_ID")) instanceId = e;
+    // instanceId 在前面 http server 前已经定好
 
     // advertised host:port（替换 0.0.0.0 为可达地址）
     std::string advertised = addr;
@@ -270,6 +307,11 @@ int main(int argc, char* argv[]) {
     g_regCv.notify_all();
     if (shutdownWatcher.joinable()) shutdownWatcher.join();
     if (regThread.joinable()) regThread.join();
+    // 停 http /metrics
+    gaugeRunning.store(false);
+    if (gaugeThread.joinable()) gaugeThread.join();
+    httpLoop.quit();
+    if (httpThread.joinable()) httpThread.join();
     std::cerr << "[logic] stopped\n";
     return 0;
 }

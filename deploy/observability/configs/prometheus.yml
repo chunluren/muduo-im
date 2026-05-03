@@ -11,6 +11,17 @@ global:
   external_labels:
     monitor: muduo-im
 
+# 告警规则（5b.6 末）
+rule_files:
+  - alert.rules.yml
+
+# 把 evaluated alerts 转给 alertmanager
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+            - 127.0.0.1:9093
+
 # ─────────────────────────────────────────────────────────────
 # 抓哪些 target
 # ─────────────────────────────────────────────────────────────
@@ -36,6 +47,15 @@ scrape_configs:
         labels: { instance: 'gw-A' }
       - targets: ['127.0.0.1:9182']
         labels: { instance: 'gw-B' }
+    metrics_path: /metrics
+
+  # 2.5 logic /metrics（独立 HttpServer 在不同端口）
+  - job_name: muduo-im-logic
+    static_configs:
+      - targets: ['127.0.0.1:9110']
+        labels: { instance: 'logic-A' }
+      - targets: ['127.0.0.1:9111']
+        labels: { instance: 'logic-B' }
     metrics_path: /metrics
 
   # 3. haproxy（5b.6 内置 prometheus-exporter 在 :8404）

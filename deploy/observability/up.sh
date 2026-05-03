@@ -71,7 +71,15 @@ start_proc kafka-exporter kafka_exporter \
     --kafka.server=127.0.0.1:9292 \
     --web.listen-address=:9308
 
-# 5. Prometheus
+# 5a. Alertmanager（在 prometheus 前起，让 prometheus 启动时能连上）
+ALERT_CFG=$(pwd)/configs/alertmanager.yml
+start_proc alertmanager alertmanager \
+    --config.file="$ALERT_CFG" \
+    --storage.path="$DATA_ROOT/alertmanager" \
+    --web.listen-address=:9093 \
+    --cluster.listen-address=
+
+# 5b. Prometheus
 start_proc prometheus prometheus \
     --config.file="$CONF" \
     --storage.tsdb.path="$DATA_ROOT/prom-data" \
@@ -140,7 +148,7 @@ start_proc grafana grafana server \
 sleep 2
 echo
 echo "=== process state ==="
-for name in node-exporter redis-exporter mysqld-exporter kafka-exporter prometheus grafana; do
+for name in node-exporter redis-exporter mysqld-exporter kafka-exporter alertmanager prometheus grafana; do
     pidfile="$DATA_ROOT/$name.pid"
     if [[ -f "$pidfile" ]] && kill -0 "$(cat "$pidfile")" 2>/dev/null; then
         echo "  ✓ $name pid=$(cat "$pidfile")"
@@ -157,6 +165,8 @@ echo
 echo "✓ Observability stack up."
 echo "  Prometheus UI : http://127.0.0.1:9090"
 echo "  Targets       : http://127.0.0.1:9090/targets"
+echo "  Alerts        : http://127.0.0.1:9090/alerts"
+echo "  Alertmanager  : http://127.0.0.1:9093"
 echo "  Grafana UI    : http://127.0.0.1:3000  (匿名只读 / admin:admin 写)"
 echo "  Dashboards    : http://127.0.0.1:3000/dashboards (folder: muduo-im)"
 echo "  Stop          : bash deploy/observability/down.sh"
