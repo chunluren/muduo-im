@@ -146,6 +146,18 @@ target_link_libraries(muduo-im
 if(KAFKA_FOUND)
     target_include_directories(muduo-im PRIVATE ${KAFKA_INCLUDE_DIR})
     target_link_libraries(muduo-im ${KAFKA_CPP_LIBRARY} ${KAFKA_C_LIBRARY})
+
+    # Phase 1.3 muduo-im-persister：消费 im.messages 写 MySQL
+    add_executable(muduo-im-persister src/persister/main.cpp)
+    target_include_directories(muduo-im-persister PRIVATE ${KAFKA_INCLUDE_DIR})
+    target_link_libraries(muduo-im-persister
+        mymuduo
+        nlohmann_json::nlohmann_json
+        OpenSSL::SSL OpenSSL::Crypto
+        ZLIB::ZLIB
+        ${MYSQL_LIBRARY}
+        ${KAFKA_CPP_LIBRARY} ${KAFKA_C_LIBRARY}
+        pthread)
 endif()
 
 # WebSocket benchmark client
