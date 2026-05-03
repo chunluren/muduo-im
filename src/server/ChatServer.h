@@ -417,17 +417,56 @@ private:
         json j;
         if (!parseJsonBody(req, resp, j)) return;
         std::string username = j.value("username", "");
-        auto result = userService_.login(username, j.value("password", ""));
-
-        // 审计：登录成功/失败均留痕（失败可用于检测暴力破解）
+        std::string password = j.value("password", "");
         std::string ip = getClientIp(req);
-        if (result.value("success", false)) {
-            int64_t uid = result.value("userId", (int64_t)0);
-            auditService_.log(uid, "login", username, ip);
-        } else {
-            auditService_.log(0, "login_failed", username, ip, result.value("message", ""));
+
+        // login 内部要做 Argon2id 校验（设计上故意慢，~几十 ms 纯 CPU）。在 IO
+        // 线程跑会把整条 subLoop 上其它连接全卡住。切到 worker pool。
+        // 拿到 conn 自己 send；提示 HttpServer 不要自动应答。
+        auto conn = req.connection();
+        if (!conn) {
+            // 兜底：拿不到连接（理论上不会，因为 HttpServer 在 onMessage 注入了），
+            // 退回同步路径
+            auto result = userService_.login(username, password);
+            resp.setJson(result.dump());
+            return;
         }
-        resp.setJson(result.dump());
+        bool keepAlive = req.keepAlive();
+        resp.deferred = true;
+
+        bool ok = workerPool_.submit(
+            [this, conn, keepAlive, username = std::move(username),
+             password = std::move(password), ip]() {
+                json result = userService_.login(username, password);
+
+                if (result.value("success", false)) {
+                    int64_t uid = result.value("userId", (int64_t)0);
+                    auditService_.log(uid, "login", username, ip);
+                } else {
+                    auditService_.log(0, "login_failed", username, ip,
+                                       result.value("message", ""));
+                }
+
+                HttpResponse out;
+                out.setJson(result.dump());
+                out.closeConnection = !keepAlive;
+                // sendIov 是 loop-safe 的：它会 runInLoop 切回 IO 线程
+                std::string header = out.toHeader();
+                TcpConnection::IoSlice slices[2] = {
+                    { header.data(), header.size() },
+                    { out.body.data(), out.body.size() },
+                };
+                conn->sendIov(slices, 2);
+                if (out.closeConnection) conn->shutdown();
+            });
+
+        if (!ok) {
+            // worker pool 满 → 直接同步给一个 503，不阻塞客户端
+            resp.deferred = false;
+            resp = HttpResponse();
+            resp.setStatusCode(HttpStatusCode::SERVICE_UNAVAILABLE);
+            resp.setJson(R"({"success":false,"message":"server busy, retry later"})");
+        }
     }
 
     // ==================== Route Handlers: Friends ====================
