@@ -19,6 +19,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <deque>
+#include "util/CircuitBreaker.h"
 #include <functional>
 #include <iostream>
 #include <memory>
@@ -32,10 +33,16 @@ public:
     using PushCallback = std::function<void(int64_t, const std::string&)>;
 
     LogicClient(const std::string& addr, std::string gatewayId)
-        : addr_(addr), gatewayId_(std::move(gatewayId)) {
+        : addr_(addr), gatewayId_(std::move(gatewayId)),
+          // 连续 3 次失败打开熔断；半开态 2 次成功恢复；打开态 5s 后自动尝试半开
+          breaker_(3, 2, 5) {
         channel_ = grpc::CreateChannel(addr_, grpc::InsecureChannelCredentials());
         stub_ = im::LogicService::NewStub(channel_);
     }
+
+    /// 当前是否健康（熔断器闭合或半开）。Pool 选 endpoint 时用这个跳过坏实例。
+    bool healthy() { return breaker_.allow(); }
+    const std::string& addr() const { return addr_; }
 
     ~LogicClient() { stop(); }
 
@@ -46,6 +53,12 @@ public:
     grpc::Status handleMessage(int64_t uid, const std::string& deviceId,
                                const std::string& connId, const std::string& payload,
                                std::string* reply) {
+        // 熔断器拒绝：直接返回 UNAVAILABLE，让 Pool 上层选别家
+        if (!breaker_.allow()) {
+            return grpc::Status(grpc::StatusCode::UNAVAILABLE,
+                                "circuit breaker open for " + addr_);
+        }
+
         im::MessageRequest req;
         req.mutable_env()->set_trace_id(connId + "-" + std::to_string(nowMs()));
         req.mutable_env()->set_instance(gatewayId_);
@@ -59,7 +72,19 @@ public:
         ctx.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(3));
         im::MessageResponse resp;
         auto st = stub_->HandleMessage(&ctx, req, &resp);
-        if (st.ok() && reply) *reply = resp.inline_reply();
+
+        // 失败语义：UNAVAILABLE / DEADLINE_EXCEEDED 是传输层 / 后端不可达，记失败
+        // 业务错（INVALID/INTERNAL）虽然是 !ok，但 logic 实例本身是活的，记成功
+        if (st.ok()) {
+            breaker_.recordSuccess();
+            if (reply) *reply = resp.inline_reply();
+        } else if (st.error_code() == grpc::StatusCode::UNAVAILABLE ||
+                   st.error_code() == grpc::StatusCode::DEADLINE_EXCEEDED) {
+            breaker_.recordFailure();
+        } else {
+            // 业务错误，logic 实例健康 → 计入 success（让熔断器恢复）
+            breaker_.recordSuccess();
+        }
         return st;
     }
 
@@ -204,4 +229,7 @@ private:
     std::deque<im::GatewayEvent> eventQueue_;
 
     PushCallback pushCb_;
+
+    /// 上行 unary 的熔断器：连续 3 次 UNAVAILABLE/DEADLINE → 打开 5s
+    CircuitBreaker breaker_;
 };

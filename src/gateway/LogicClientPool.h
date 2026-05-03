@@ -48,25 +48,50 @@ public:
         clients_.clear();
     }
 
-    /// 上行 unary：按 routing_key 选 logic
+    /// 上行 unary：按 routing_key 选 logic；UNAVAILABLE/DEADLINE 时尝试一次备用
+    /// 备用挑选：从 clients_ 里找一个 healthy() 且 addr 不同的，轮询遍历最多一次
     grpc::Status handleMessage(int64_t uid, const std::string& deviceId,
                                const std::string& connId,
                                const std::string& routingKey,
                                const std::string& payload, std::string* reply) {
-        std::shared_ptr<LogicClient> client;
+        std::shared_ptr<LogicClient> primary;
+        std::string primaryAddr;
         {
             std::lock_guard<std::mutex> lk(mu_);
             if (ring_.empty()) {
                 return grpc::Status(grpc::StatusCode::UNAVAILABLE, "no logic instance");
             }
-            auto addr = ring_.get(routingKey);
-            auto it = clients_.find(addr);
+            primaryAddr = ring_.get(routingKey);
+            auto it = clients_.find(primaryAddr);
             if (it == clients_.end()) {
-                return grpc::Status(grpc::StatusCode::UNAVAILABLE, "no client for " + addr);
+                return grpc::Status(grpc::StatusCode::UNAVAILABLE,
+                                    "no client for " + primaryAddr);
             }
-            client = it->second;
+            primary = it->second;
         }
-        return client->handleMessage(uid, deviceId, connId, payload, reply);
+
+        auto st = primary->handleMessage(uid, deviceId, connId, payload, reply);
+        if (st.ok()) return st;
+        if (st.error_code() != grpc::StatusCode::UNAVAILABLE &&
+            st.error_code() != grpc::StatusCode::DEADLINE_EXCEEDED) {
+            return st;  // 业务错或其它，不重试
+        }
+
+        // 重试：找一个 addr 不同且 healthy 的备用
+        std::shared_ptr<LogicClient> backup;
+        {
+            std::lock_guard<std::mutex> lk(mu_);
+            for (auto& [addr, c] : clients_) {
+                if (addr == primaryAddr) continue;
+                if (!c->healthy()) continue;
+                backup = c;
+                break;
+            }
+        }
+        if (!backup) return st;  // 没备用 → 把 primary 的状态原样返
+        std::cerr << "[pool] retry " << primaryAddr << " → " << backup->addr()
+                  << " (primary " << st.error_message() << ")\n";
+        return backup->handleMessage(uid, deviceId, connId, payload, reply);
     }
 
     void notifyConnOpen(int64_t uid, const std::string& deviceId) {
