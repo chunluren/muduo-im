@@ -111,7 +111,11 @@ public:
         , jwtSecret_(jwtSecret)
         , mysqlBreaker_(5, 2, 10)   // 连续 5 次失败打开，2 次成功恢复，10 秒超时
         , redisBreaker_(5, 2, 10)
-        , workerPool_(8, 10240, "chat-worker")  // Phase 4.0：把含 DB 调用的 handler 切走
+        // Phase 4.0：把含 DB 调用的 handler 切走 IO 线程
+        // 容量：基线测试（capacity-baseline.md）显示 8 worker / 10k 队列在 5k+ 并发
+        // 下被打爆（dropped_tasks=8912）。提到 16 worker / 20k 队列匹配单实例
+        // 目标 ~10k 并发的水位。logic 实例规模确定后再调。
+        , workerPool_(16, 20480, "chat-worker")
     {
         setupHttpRoutes();
         setupWebSocket();
