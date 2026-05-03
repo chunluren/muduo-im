@@ -1,0 +1,165 @@
+# Phase 5b.5: 顶层 compose 替代版，把单 redis 换成 1 master + 2 replica + 3 sentinel。
+#
+# 与默认 docker-compose.yml 互斥：用一个就停另一个。
+#
+#   docker compose -f docker-compose.sentinel.yml up -d
+#   docker compose -f docker-compose.sentinel.yml ps
+#   docker compose -f docker-compose.sentinel.yml logs muduo-im | head
+#
+# muduo-im 进程通过 MUDUO_IM_REDIS_SENTINELS 自动走 sentinel 模式，
+# Sentinel failover 后业务零感知。
+#
+# 演练：
+#   # 杀 master，sentinel 自动选新主：
+#   docker compose -f docker-compose.sentinel.yml stop redis-master
+#   sleep 8
+#   docker compose -f docker-compose.sentinel.yml exec redis-sentinel-1 \
+#     redis-cli -p 26379 sentinel get-master-addr-by-name im-master
+
+version: '3.8'
+
+services:
+  mysql:
+    image: mysql:8.0
+    environment:
+      MYSQL_ALLOW_EMPTY_PASSWORD: "yes"
+      MYSQL_DATABASE: muduo_im
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./sql/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ──────── Redis sentinel 拓扑：1 master + 2 replica + 3 sentinel ────────
+  redis-master:
+    image: redis:6-alpine
+    container_name: redis-master
+    command: >
+      redis-server
+      --appendonly yes
+      --appendfsync everysec
+      --replica-read-only yes
+    ports: ["6379:6379"]
+    volumes: [redis_master_data:/data]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis-replica-1:
+    image: redis:6-alpine
+    container_name: redis-replica-1
+    command: >
+      redis-server
+      --appendonly yes
+      --appendfsync everysec
+      --replicaof redis-master 6379
+      --replica-read-only yes
+    ports: ["6380:6379"]
+    volumes: [redis_replica1_data:/data]
+    depends_on:
+      redis-master:
+        condition: service_healthy
+
+  redis-replica-2:
+    image: redis:6-alpine
+    container_name: redis-replica-2
+    command: >
+      redis-server
+      --appendonly yes
+      --appendfsync everysec
+      --replicaof redis-master 6379
+      --replica-read-only yes
+    ports: ["6381:6379"]
+    volumes: [redis_replica2_data:/data]
+    depends_on:
+      redis-master:
+        condition: service_healthy
+
+  redis-sentinel-1:
+    image: redis:6-alpine
+    container_name: redis-sentinel-1
+    entrypoint: >
+      sh -c '
+      cat > /tmp/sentinel.conf <<EOF
+      port 26379
+      sentinel monitor im-master redis-master 6379 2
+      sentinel down-after-milliseconds im-master 5000
+      sentinel parallel-syncs im-master 1
+      sentinel failover-timeout im-master 30000
+      EOF
+      redis-server /tmp/sentinel.conf --sentinel'
+    ports: ["26379:26379"]
+    depends_on:
+      redis-master:
+        condition: service_healthy
+
+  redis-sentinel-2:
+    image: redis:6-alpine
+    container_name: redis-sentinel-2
+    entrypoint: >
+      sh -c '
+      cat > /tmp/sentinel.conf <<EOF
+      port 26380
+      sentinel monitor im-master redis-master 6379 2
+      sentinel down-after-milliseconds im-master 5000
+      sentinel parallel-syncs im-master 1
+      sentinel failover-timeout im-master 30000
+      EOF
+      redis-server /tmp/sentinel.conf --sentinel'
+    ports: ["26380:26380"]
+    depends_on:
+      redis-master:
+        condition: service_healthy
+
+  redis-sentinel-3:
+    image: redis:6-alpine
+    container_name: redis-sentinel-3
+    entrypoint: >
+      sh -c '
+      cat > /tmp/sentinel.conf <<EOF
+      port 26381
+      sentinel monitor im-master redis-master 6379 2
+      sentinel down-after-milliseconds im-master 5000
+      sentinel parallel-syncs im-master 1
+      sentinel failover-timeout im-master 30000
+      EOF
+      redis-server /tmp/sentinel.conf --sentinel'
+    ports: ["26381:26381"]
+    depends_on:
+      redis-master:
+        condition: service_healthy
+
+  # ──────── 应用 ────────
+  muduo-im:
+    build: .
+    ports:
+      - "8080:8080"
+      - "9090:9090"
+    environment:
+      MUDUO_IM_JWT_SECRET: ${MUDUO_IM_JWT_SECRET:-change-me-in-production}
+      # Phase 5b: 走 sentinel 模式（容器名解析）
+      MUDUO_IM_REDIS_SENTINELS: redis-sentinel-1:26379,redis-sentinel-2:26380,redis-sentinel-3:26381
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis-master:
+        condition: service_healthy
+      redis-sentinel-1:
+        condition: service_started
+      redis-sentinel-2:
+        condition: service_started
+      redis-sentinel-3:
+        condition: service_started
+
+volumes:
+  mysql_data:
+  redis_master_data:
+  redis_replica1_data:
+  redis_replica2_data:

@@ -116,6 +116,33 @@ az1 全挂时人工/编排器执行：
 - 200/200 messages, 199/199 routed to az1（剩 1 是 etcd lease 边界 race，可接受）
 - az1 down 后 50/50 messages 全走 az2，p99 持平
 
+### 5.1 跨主机模拟（带延迟）
+
+`tests/etcd/multi_az_crosshost_drill.sh` 用 `tc netem` 在 lo 上给 az2 端口注入
+单向 15ms 延迟。**已知限制**：tc 在 loopback 上经常 fast-path 跳过，实测 p99 差距
+不一定能稳定显出来。脚本仍会跑两轮 e2e 验证路由逻辑，那部分是确定的。
+
+要做"真" 跨节点模拟，开两个 netns：
+
+```bash
+sudo ip netns add az1
+sudo ip netns add az2
+sudo ip link add veth-az1 type veth peer name veth-az2
+sudo ip link set veth-az1 netns az1
+sudo ip link set veth-az2 netns az2
+sudo ip netns exec az1 ip addr add 10.1.0.1/24 dev veth-az1
+sudo ip netns exec az2 ip addr add 10.1.0.2/24 dev veth-az2
+sudo ip netns exec az1 ip link set veth-az1 up
+sudo ip netns exec az2 ip link set veth-az2 up
+sudo ip netns exec az2 tc qdisc add dev veth-az2 root netem delay 15ms
+
+# 在 az1 namespace 跑 logic-az1 / gateway-A：
+sudo ip netns exec az1 ./build/muduo-im-logic 0.0.0.0:9100
+# az2 同理
+```
+
+这种方式 tc qdisc 在 veth 上**确实**生效（不是 lo 的 fast-path）。
+
 ## 6. 与设计目标对照
 
 | 目标 | 实现状态 |

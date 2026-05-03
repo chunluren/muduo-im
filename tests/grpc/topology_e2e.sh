@@ -45,10 +45,12 @@ sleep 1
 
 # --- 2 gateways ---
 MUDUO_IM_GATEWAY_ID=gw-A MUDUO_IM_REGISTRY_ADDR=127.0.0.1:9200 \
+  MUDUO_IM_GATEWAY_HEALTH_PORT=9081 \
   "$BUILD/muduo-im-gateway" 9091 &> "$LOG/gw-a.log" &
 echo $! > "$LOG/gw-a.pid"
 
 MUDUO_IM_GATEWAY_ID=gw-B MUDUO_IM_REGISTRY_ADDR=127.0.0.1:9200 \
+  MUDUO_IM_GATEWAY_HEALTH_PORT=9182 \
   "$BUILD/muduo-im-gateway" 9192 &> "$LOG/gw-b.log" &
 echo $! > "$LOG/gw-b.pid"
 

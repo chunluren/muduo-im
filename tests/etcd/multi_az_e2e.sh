@@ -46,13 +46,14 @@ start_logic logic-B2 az2 9103 14
 sleep 1.5
 
 start_gw() {
-    local id=$1 az=$2 port=$3
+    local id=$1 az=$2 port=$3 health=$4
     MUDUO_IM_USE_ETCD=1 MUDUO_IM_AZ=$az MUDUO_IM_GATEWAY_ID=$id \
+      MUDUO_IM_GATEWAY_HEALTH_PORT=$health \
       "$BUILD/muduo-im-gateway" $port &> "$LOG/$id.log" &
     echo $! > "$LOG/$id.pid"
 }
-start_gw gw-A az1 9091
-start_gw gw-B az2 9192
+start_gw gw-A az1 9091 9081
+start_gw gw-B az2 9192 9182
 sleep 2.5
 
 echo "[multi-az] gw-A pool:"

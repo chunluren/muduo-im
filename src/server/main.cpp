@@ -10,6 +10,7 @@
 #include "server/ChatServer.h"
 #include "common/Config.h"
 #include "common/Logging.h"
+#include "common/RedisConfigLoader.h"
 #include "net/EventLoop.h"
 #include "asynclogger/AsyncLogger.h"
 #include "util/Snowflake.h"
@@ -96,38 +97,8 @@ int main(int argc, char* argv[]) {
     mysqlConfig.minSize = config.getInt("mysql.pool_min", 5);
     mysqlConfig.maxSize = config.getInt("mysql.pool_max", 20);
 
-    // ---- Redis 连接池配置 ----
-    RedisPoolConfig redisConfig;
-    redisConfig.host = config.get("redis.host", "127.0.0.1");
-    redisConfig.port = config.getInt("redis.port", 6379);
-    redisConfig.password = config.get("redis.password", "");
-    redisConfig.minSize = config.getInt("redis.pool_min", 3);
-    redisConfig.maxSize = config.getInt("redis.pool_max", 10);
-
-    // Phase 5b: Sentinel 模式（可选）。redis.sentinels = "h1:p1,h2:p2,h3:p3"
-    // 设了之后 host/port 自动被 sentinel 解析覆盖，failover 透明。
-    {
-        std::string sentinelList = config.get("redis.sentinels", "");
-        if (sentinelList.empty()) {
-            if (const char* e = std::getenv("MUDUO_IM_REDIS_SENTINELS")) sentinelList = e;
-        }
-        if (!sentinelList.empty()) {
-            size_t i = 0;
-            while (i < sentinelList.size()) {
-                size_t comma = sentinelList.find(',', i);
-                if (comma == std::string::npos) comma = sentinelList.size();
-                std::string s = sentinelList.substr(i, comma - i);
-                // trim
-                while (!s.empty() && (s.front() == ' ' || s.front() == '\t')) s.erase(s.begin());
-                while (!s.empty() && (s.back() == ' ' || s.back() == '\t'))  s.pop_back();
-                if (!s.empty()) redisConfig.sentinels.push_back(s);
-                i = comma + 1;
-            }
-            redisConfig.sentinelMaster = config.get("redis.sentinel_master", "im-master");
-            std::cerr << "[main] Redis sentinel mode: master='" << redisConfig.sentinelMaster
-                      << "' sentinels=" << redisConfig.sentinels.size() << "\n";
-        }
-    }
+    // ---- Redis 连接池配置（共享 helper：直连 / sentinel 二合一） ----
+    RedisPoolConfig redisConfig = im_common::loadRedisConfig(config);
 
     uint16_t httpPort = config.getInt("server.http_port", 8080);
     uint16_t wsPort = config.getInt("server.ws_port", 9090);
