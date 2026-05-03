@@ -36,6 +36,10 @@ public:
 
     ~LogicClientPool() { stop(); }
 
+    /// Phase 5: 设置本 gateway 所在 AZ。空字符串 = AZ-blind（默认）。
+    /// 设置后路由优先选 same-AZ 的 logic；same-AZ 全挂时 fallback 到任意 logic。
+    void setLocalAz(std::string az) { localAz_ = std::move(az); }
+
     /// 改走 etcd 服务发现（替代默认的 gRPC RegistryService Watch）
     /// 必须在 start() 之前调用
     void enableEtcd(std::string host, int port,
@@ -78,16 +82,25 @@ public:
         std::string primaryAddr;
         {
             std::lock_guard<std::mutex> lk(mu_);
-            if (ring_.empty()) {
-                return grpc::Status(grpc::StatusCode::UNAVAILABLE, "no logic instance");
+            // Phase 5: 优先 same-AZ 环；空 / 没节点时退到全局环
+            if (!localAz_.empty()) {
+                auto it = ringByAz_.find(localAz_);
+                if (it != ringByAz_.end() && !it->second.empty()) {
+                    primaryAddr = it->second.get(routingKey);
+                }
             }
-            primaryAddr = ring_.get(routingKey);
-            auto it = clients_.find(primaryAddr);
-            if (it == clients_.end()) {
+            if (primaryAddr.empty()) {
+                if (ring_.empty()) {
+                    return grpc::Status(grpc::StatusCode::UNAVAILABLE, "no logic instance");
+                }
+                primaryAddr = ring_.get(routingKey);
+            }
+            auto cit = clients_.find(primaryAddr);
+            if (cit == clients_.end()) {
                 return grpc::Status(grpc::StatusCode::UNAVAILABLE,
                                     "no client for " + primaryAddr);
             }
-            primary = it->second;
+            primary = cit->second;
         }
 
         auto st = primary->handleMessage(uid, deviceId, connId, payload, reply);
@@ -97,15 +110,28 @@ public:
             return st;  // 业务错或其它，不重试
         }
 
-        // 重试：找一个 addr 不同且 healthy 的备用
+        // 重试：找一个 addr 不同且 healthy 的备用，same-AZ 优先
         std::shared_ptr<LogicClient> backup;
         {
             std::lock_guard<std::mutex> lk(mu_);
-            for (auto& [addr, c] : clients_) {
-                if (addr == primaryAddr) continue;
-                if (!c->healthy()) continue;
-                backup = c;
-                break;
+            // 1) same-AZ 备用
+            if (!localAz_.empty()) {
+                for (auto& [addr, c] : clients_) {
+                    if (addr == primaryAddr || !c->healthy()) continue;
+                    auto azIt = addrToAz_.find(addr);
+                    if (azIt != addrToAz_.end() && azIt->second == localAz_) {
+                        backup = c;
+                        break;
+                    }
+                }
+            }
+            // 2) 跨 AZ fail-open
+            if (!backup) {
+                for (auto& [addr, c] : clients_) {
+                    if (addr == primaryAddr || !c->healthy()) continue;
+                    backup = c;
+                    break;
+                }
             }
         }
         if (!backup) return st;  // 没备用 → 把 primary 的状态原样返
@@ -182,7 +208,8 @@ private:
             auto kvs = etcd.getPrefix(etcdPrefix_);
             for (auto& kv : kvs) {
                 im::Endpoint ep;
-                if (parseEndpoint(kv.key, kv.value, ep)) addEndpoint(ep);
+                std::string az;
+                if (parseEndpoint(kv.key, kv.value, ep, az)) addEndpoint(ep, az);
             }
             // 把首批写入 EtcdClient::lastSnapshot_，避免下一轮再触发 added
             etcd.pollOnce(etcdPrefix_, [](auto&, auto&, auto&) {});
@@ -193,7 +220,8 @@ private:
                          const std::vector<EtcdClient::KV>& updated) {
             for (auto& kv : added) {
                 im::Endpoint ep;
-                if (parseEndpoint(kv.key, kv.value, ep)) addEndpoint(ep);
+                std::string az;
+                if (parseEndpoint(kv.key, kv.value, ep, az)) addEndpoint(ep, az);
             }
             for (auto& key : removedKeys) {
                 std::string instId = instanceIdFromKey(key);
@@ -202,9 +230,10 @@ private:
             for (auto& kv : updated) {
                 // 简化：先 remove 再 add（与 watchLoop 行为一致）
                 im::Endpoint ep;
-                if (parseEndpoint(kv.key, kv.value, ep)) {
+                std::string az;
+                if (parseEndpoint(kv.key, kv.value, ep, az)) {
                     removeEndpoint(ep.instance_id());
-                    addEndpoint(ep);
+                    addEndpoint(ep, az);
                 }
             }
         };
@@ -231,9 +260,9 @@ private:
         return key.substr(etcdPrefix_.size());
     }
 
-    /// 把 etcd 里的 JSON value 解析成 im::Endpoint。失败返回 false
+    /// 把 etcd 里的 JSON value 解析成 im::Endpoint + AZ tag。失败返回 false
     bool parseEndpoint(const std::string& key, const std::string& value,
-                       im::Endpoint& out) const {
+                       im::Endpoint& out, std::string& az) const {
         auto j = nlohmann::json::parse(value, nullptr, false);
         if (j.is_discarded() || !j.contains("addr")) {
             std::cerr << "[pool] etcd value malformed key=" << key << "\n";
@@ -243,10 +272,13 @@ private:
         out.set_service(j.value("service", "logic"));
         out.set_addr(j["addr"].get<std::string>());
         out.set_weight(j.value("weight", 1));
+        az = j.value("az", "");
         return true;
     }
 
-    void addEndpoint(const im::Endpoint& ep) {
+    /// 添加 endpoint。`az` 为空表示 AZ-blind（registry gRPC 路径 default）；
+    /// etcd 路径会从 JSON value 里取 "az" 字段并传进来（Phase 5）。
+    void addEndpoint(const im::Endpoint& ep, const std::string& az = "") {
         std::lock_guard<std::mutex> lk(mu_);
         if (clients_.count(ep.addr())) return;
         auto c = std::make_shared<LogicClient>(ep.addr(), gatewayId_);
@@ -255,8 +287,14 @@ private:
         clients_[ep.addr()] = c;
         instanceToAddr_[ep.instance_id()] = ep.addr();
         ring_.addNode(ep.addr());
+        if (!az.empty()) {
+            ringByAz_[az].addNode(ep.addr());
+            addrToAz_[ep.addr()] = az;
+        }
         std::cerr << "[pool] add logic instance=" << ep.instance_id()
                   << " addr=" << ep.addr()
+                  << (az.empty() ? std::string{}
+                                 : (" az=" + az + (az == localAz_ ? " (local)" : " (remote)")))
                   << " (size=" << clients_.size() << ")\n";
     }
 
@@ -271,6 +309,12 @@ private:
             cit->second->stop();
             clients_.erase(cit);
             ring_.removeNode(addr);
+            auto azIt = addrToAz_.find(addr);
+            if (azIt != addrToAz_.end()) {
+                auto rIt = ringByAz_.find(azIt->second);
+                if (rIt != ringByAz_.end()) rIt->second.removeNode(addr);
+                addrToAz_.erase(azIt);
+            }
             std::cerr << "[pool] remove logic instance=" << instanceId
                       << " addr=" << addr << "\n";
         }
@@ -296,4 +340,9 @@ private:
     std::unordered_map<std::string, std::shared_ptr<LogicClient>> clients_;  // key = addr
     std::unordered_map<std::string, std::string> instanceToAddr_;            // instance_id → addr
     ConsistentHashRing ring_{200};
+
+    // Phase 5: AZ-aware routing
+    std::string localAz_;                                                    // 本 gateway 所在 AZ
+    std::unordered_map<std::string, std::string> addrToAz_;                  // addr → az
+    std::unordered_map<std::string, ConsistentHashRing> ringByAz_;           // az → ring
 };

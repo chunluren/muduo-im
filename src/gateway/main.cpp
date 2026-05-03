@@ -8,6 +8,7 @@
 #include "LogicClient.h"
 #include "LogicClientPool.h"
 #include "common/Logging.h"
+#include "http/HttpServer.h"
 #include "net/EventLoop.h"
 #include "websocket/WebSocketServer.h"
 #include <atomic>
@@ -24,6 +25,7 @@
 
 static EventLoop*        g_loop = nullptr;
 static std::atomic<bool> g_stop{false};
+static std::atomic<bool> g_draining{false};   // Phase 5b: /health 切 503，让 LB 先把流量摘走
 static int               g_lastSig = 0;
 
 // signal handler 只设 flag —— 不直接调 g_loop->quit()。
@@ -132,10 +134,15 @@ int main(int argc, char* argv[]) {
         if (const char* e = std::getenv("MUDUO_IM_LOGIC_KEY_PREFIX")) prefix = e;
         // registryAddr 此处不需要，但 pool ctor 仍要一个值；传空字符串
         pool.reset(new LogicClientPool("", gatewayId, pushCb));
+        // Phase 5: 本 gateway AZ → same-AZ 优先路由
+        if (const char* e = std::getenv("MUDUO_IM_AZ")) {
+            pool->setLocalAz(e);
+        }
         pool->enableEtcd(etcdHost, etcdPort, apiPrefix, prefix);
         pool->start();
         std::cerr << "[gateway] using etcd " << etcdHost << ":" << etcdPort
-                  << " prefix=" << prefix << "\n";
+                  << " prefix=" << prefix
+                  << " localAz=" << (std::getenv("MUDUO_IM_AZ") ?: "(unset)") << "\n";
     } else if (!registryAddr.empty()) {
         pool.reset(new LogicClientPool(registryAddr, gatewayId, pushCb));
         pool->start();
@@ -150,6 +157,27 @@ int main(int argc, char* argv[]) {
     EventLoop loop;
     g_loop = &loop;
     WebSocketServer wsServer(&loop, InetAddress(wsPort), "muduo-im-gateway");
+
+    // Phase 5b: HTTP /health 端点，给 haproxy http-check 探活
+    uint16_t healthPort = 9081;
+    if (const char* e = std::getenv("MUDUO_IM_GATEWAY_HEALTH_PORT")) healthPort = (uint16_t)std::atoi(e);
+    HttpServer healthServer(&loop, InetAddress(healthPort), "muduo-im-gateway-health");
+    healthServer.setThreadNum(1);
+    healthServer.GET("/health", [&wsServer, &gatewayId](const HttpRequest&, HttpResponse& resp) {
+        if (g_draining.load()) {
+            resp.setStatusCode(HttpStatusCode::SERVICE_UNAVAILABLE);
+            resp.setContentType("application/json");
+            resp.setBody("{\"status\":\"draining\",\"id\":\"" + gatewayId + "\"}");
+            return;
+        }
+        size_t n = wsServer.sessionCount();
+        resp.setStatusCode(HttpStatusCode::OK);
+        resp.setContentType("application/json");
+        resp.setBody("{\"status\":\"healthy\",\"id\":\"" + gatewayId +
+                     "\",\"ws_sessions\":" + std::to_string(n) + "}");
+    });
+    healthServer.start();
+    std::cerr << "[gateway] /health on :" << healthPort << "\n";
 
     WebSocketConfig wsCfg;
     wsCfg.idleTimeoutMs = 60000;
@@ -232,29 +260,40 @@ int main(int argc, char* argv[]) {
               "id=" + gatewayId + " ws_port=" + std::to_string(wsPort) +
               " logic=" + logicAddr);
 
-    // graceful 下线时序（Phase 4.1B）：
+    // graceful 下线时序（Phase 4.1B + 5b）：
     //   1. SIGTERM → g_stop=true
-    //   2. watcher 在 loop 线程里发 close(1001 going_away) 给所有 ws session
-    //   3. 等 gracePeriodMs，让客户端去重连别的 gateway
-    //   4. quit loop → 退出主线
+    //   2. /health 切 503，让 haproxy 在下个 check 周期（默认 2s × 3 = 6s）摘掉本节点
+    //   3. 等 lbDrainMs（默认 7s），让 LB 把新连接停止打过来
+    //   4. 给所有 ws session 发 close(1001 going_away) — 客户端去重连别的 gateway
+    //   5. 等 wsGraceMs（默认 800ms），客户端断开 + 切 gateway
+    //   6. quit loop → 退出主线
     int wsGraceMs = 800;
-    if (const char* e = std::getenv("MUDUO_IM_DRAIN_GRACE_MS")) wsGraceMs = std::atoi(e);
-    std::thread shutdownWatcher([&wsServer, &loop, wsGraceMs]() {
+    int lbDrainMs = 7000;
+    if (const char* e = std::getenv("MUDUO_IM_DRAIN_GRACE_MS"))   wsGraceMs = std::atoi(e);
+    if (const char* e = std::getenv("MUDUO_IM_LB_DRAIN_MS"))      lbDrainMs = std::atoi(e);
+    std::thread shutdownWatcher([&wsServer, &loop, wsGraceMs, lbDrainMs]() {
         while (!g_stop.load()) {
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
         }
-        size_t n = wsServer.sessionCount();
+        // 2) 先翻 draining flag → /health 立刻返 503
+        g_draining.store(true);
         std::cerr << "[gateway] signal " << g_lastSig
-                  << ", graceful drain " << n << " ws sessions"
-                  << " (gracePeriodMs=" << wsGraceMs << ")\n";
-        // 在 loop 线程里发 close frame —— ws 帧只能从 loop 线程 send
+                  << ", /health → 503 (lbDrainMs=" << lbDrainMs << ")\n";
+        // 3) 等 LB 把流量摘走
+        std::this_thread::sleep_for(std::chrono::milliseconds(lbDrainMs));
+
+        size_t n = wsServer.sessionCount();
+        std::cerr << "[gateway] graceful drain " << n << " ws sessions"
+                  << " (wsGraceMs=" << wsGraceMs << ")\n";
+        // 4) 在 loop 线程里发 close frame —— ws 帧只能从 loop 线程 send
         loop.runInLoop([&wsServer]() {
             for (auto& s : wsServer.getAllSessions()) {
                 s->close(1001, "going_away");
             }
         });
-        // 给客户端一次往返时间断开 + 切 gateway
+        // 5) 给客户端一次往返时间断开 + 切 gateway
         std::this_thread::sleep_for(std::chrono::milliseconds(wsGraceMs));
+        // 6) 退主循环
         loop.quit();
     });
 

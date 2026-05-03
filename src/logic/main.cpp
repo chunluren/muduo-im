@@ -119,7 +119,9 @@ int main(int argc, char* argv[]) {
         if (const char* e = std::getenv("MUDUO_IM_ETCD_PORT"))   etcdPort  = std::atoi(e);
         if (const char* e = std::getenv("MUDUO_IM_ETCD_PREFIX")) apiPrefix = e;
 
-        regThread = std::thread([etcdHost, etcdPort, apiPrefix, advertised, instanceId]() {
+        std::string az;
+        if (const char* e = std::getenv("MUDUO_IM_AZ")) az = e;
+        regThread = std::thread([etcdHost, etcdPort, apiPrefix, advertised, instanceId, az]() {
             EtcdClient etcd(etcdHost, etcdPort, apiPrefix);
             std::string key = "services/logic/" + instanceId;
             nlohmann::json meta = {
@@ -128,6 +130,7 @@ int main(int argc, char* argv[]) {
                 {"weight",   1},
                 {"instance", instanceId},
             };
+            if (!az.empty()) meta["az"] = az;  // Phase 5: AZ 标签
             std::string value = meta.dump();
 
             // 可中断 sleep：sleep_ms 同时盯 g_regRunning，shutdown 来时立即返回
