@@ -158,6 +158,17 @@ if(KAFKA_FOUND)
         ${MYSQL_LIBRARY}
         ${KAFKA_CPP_LIBRARY} ${KAFKA_C_LIBRARY}
         pthread)
+
+    # Phase 1.4 muduo-im-push-router：消费 im.messages → produce im.push.commands
+    add_executable(muduo-im-push-router src/push_router/main.cpp)
+    target_include_directories(muduo-im-push-router PRIVATE ${KAFKA_INCLUDE_DIR})
+    target_link_libraries(muduo-im-push-router
+        mymuduo
+        nlohmann_json::nlohmann_json
+        OpenSSL::SSL OpenSSL::Crypto
+        ZLIB::ZLIB
+        ${KAFKA_CPP_LIBRARY} ${KAFKA_C_LIBRARY}
+        pthread)
 endif()
 
 # WebSocket benchmark client
