@@ -179,6 +179,18 @@ int main(int argc, char* argv[]) {
         std::cerr << "Outbox enabled: brokers=" << brokers << std::endl;
         server.enableOutbox({brokers}, "muduo-im-" + std::to_string(::getpid()));
     }
+
+    // Phase 1.5 订阅 im.push.commands（淘汰 InstanceRouter 的方向）
+    // MUDUO_IM_PUSH_CMD_GROUP 决定消费组；不同实例必须用不同组，每实例独立拉所有 cmd
+    if (const char* on = std::getenv("MUDUO_IM_PUSH_CMD_SUB"); on && std::string(on) == "1") {
+        std::string brokers = "localhost:9092";
+        if (const char* b = std::getenv("MUDUO_IM_KAFKA_BROKERS")) brokers = b;
+        std::string group = "chat-pushcmd-" + std::to_string(::getpid());
+        if (const char* g = std::getenv("MUDUO_IM_PUSH_CMD_GROUP")) group = g;
+        std::cerr << "PushCmd subscribe enabled: brokers=" << brokers
+                  << " group=" << group << std::endl;
+        server.enablePushCommandSubscription({brokers}, group);
+    }
 #endif
 
     server.start();

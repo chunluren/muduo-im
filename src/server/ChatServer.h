@@ -40,6 +40,7 @@
 #ifdef MUDUO_IM_HAS_KAFKA
 #include "server/OutboxService.h"
 #include "util/KafkaProducer.h"
+#include "util/KafkaConsumer.h"
 #endif
 #include <set>
 #include "http/HttpServer.h"
@@ -181,6 +182,47 @@ public:
         outboxService_ = std::make_unique<OutboxService>(mysqlPool_, kafkaProducer_);
         outboxService_->start();
         std::cerr << "[outbox] enabled (kafka=" << kafkaBrokers.front() << ")\n";
+    }
+
+    /**
+     * @brief Phase 1.5 订阅 im.push.commands → 本地 broadcastToUser
+     *
+     * 取代 InstanceRouter 的 Redis Pub/Sub 跨实例分发。每个 ChatServer 实例
+     * 用独立 group_id（推荐 instance_id 当 group_id），所以**所有实例都能拉到
+     * 全部 push 命令**；只对 OnlineManager 里有该 uid 的命令做 send，没有就跳。
+     *
+     * 对单实例部署是无害冗余（push-router 也产 cmd，本地 broadcast 已在 inline
+     * 路径做过；这条路径只是把推送变成"事件溯源"模型，方便扩多实例）。
+     *
+     * @param kafkaBrokers   Kafka broker 列表
+     * @param consumerGroup  消费组 ID；不同实例必须用不同组（每实例独立读取所有 cmd）
+     */
+    void enablePushCommandSubscription(const std::vector<std::string>& kafkaBrokers,
+                                        const std::string& consumerGroup) {
+        pushCmdConsumer_ = std::make_unique<KafkaConsumer>(
+            kafkaBrokers, consumerGroup, std::vector<std::string>{"im.push.commands"});
+        bool started = pushCmdConsumer_->start(
+            [this](const std::string&, int32_t, int64_t,
+                    const std::string& /*key*/, const std::string& value) -> bool {
+                json cmd = json::parse(value, nullptr, false);
+                if (cmd.is_discarded()) return true;  // commit 跳过坏 JSON
+                std::string targetUidStr = cmd.value("targetUid", "");
+                if (targetUidStr.empty()) return true;
+                int64_t uid = 0;
+                try { uid = std::stoll(targetUidStr); } catch (...) { return true; }
+                // payload 是已经构造好的 ws 帧（type=msg / from / to / content / msgId / ts）
+                std::string wsFrame = cmd.value("payload", json{}).dump();
+                int delivered = broadcastToUser(uid, wsFrame);
+                (void)delivered;  // 0 也 OK，意味着该 uid 不在本实例
+                return true;
+            });
+        if (!started) {
+            std::cerr << "[push-cmd] consumer start fail\n";
+            pushCmdConsumer_.reset();
+        } else {
+            std::cerr << "[push-cmd] subscribed im.push.commands group="
+                      << consumerGroup << "\n";
+        }
     }
 #endif
 
@@ -2453,6 +2495,7 @@ private:
 #ifdef MUDUO_IM_HAS_KAFKA
     std::shared_ptr<KafkaProducer> kafkaProducer_;          ///< Phase 1.2 outbox/messages 总线
     std::unique_ptr<OutboxService>  outboxService_;         ///< Phase 1.2 outbox + relay
+    std::unique_ptr<KafkaConsumer>  pushCmdConsumer_;       ///< Phase 1.5 订阅 im.push.commands
 #endif
     JwtRevocationService jwtRevocation_;  ///< jti 黑名单吊销服务
     std::unique_ptr<ESClient> esClient_;  ///< ES 客户端（Phase 4.4）；nullptr=未启用

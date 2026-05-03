@@ -68,6 +68,8 @@ public:
         if (running_.exchange(true)) return;
         intervalMs_ = intervalMs;
         batchSize_  = batchSize;
+        // 先回收上次崩溃留下的 'sending' 卡死行
+        reclaimStuckSending(60);
         thread_ = std::thread([this]() { relayLoop(); });
         std::cerr << "[outbox] relay started interval=" << intervalMs_
                   << "ms batch=" << batchSize_ << "\n";
@@ -95,7 +97,9 @@ private:
         }
     }
 
-    /// 拉一批 pending → produce Kafka → 标 sent。返回本批处理行数（含失败）
+    /// 拉一批 pending → 抢占式标 'sending' → produce Kafka → 标 sent
+    /// 不再拿同一行重复投递（关键修复：以前异步 dr_cb 没回来时下一轮 drainOnce
+    /// 会再读到 status='pending' 的同一行，导致重复 produce）
     int drainOnce() {
         auto conn = db_->acquire(2000);
         if (!conn || !conn->valid()) return 0;
@@ -110,39 +114,51 @@ private:
             return 0;
         }
 
-        int processed = 0;
-        std::vector<int64_t> sentIds;
-        std::vector<std::pair<int64_t, std::string>> failedIds;
-        sentIds.reserve(batchSize_);
+        struct Row { int64_t id; std::string topic, key, payload; };
+        std::vector<Row> rows;
+        rows.reserve(batchSize_);
+        MYSQL_ROW r;
+        while ((r = mysql_fetch_row(result.get()))) {
+            rows.push_back({r[0] ? std::stoll(r[0]) : 0,
+                            r[1] ? r[1] : "",
+                            r[2] ? r[2] : "",
+                            r[3] ? r[3] : ""});
+        }
+        result.reset();
 
-        MYSQL_ROW row;
-        while ((row = mysql_fetch_row(result.get()))) {
-            int64_t id     = row[0] ? std::stoll(row[0]) : 0;
-            std::string topic   = row[1] ? row[1] : "";
-            std::string key     = row[2] ? row[2] : "";
-            std::string payload = row[3] ? row[3] : "";
-            ++processed;
+        // 2) 抢占式标 sending（CAS：仅当当前 status='pending' 才改）。
+        //    如果其它 relay 实例同时跑，就会有竞争——只有 affectedRows=1 的行
+        //    本进程才负责投递，避免双倍投递。本项目目前单 relay，影响小，但语
+        //    义保持正确。
+        std::vector<Row> claimed;
+        claimed.reserve(rows.size());
+        for (auto& row : rows) {
+            PreparedStatement upd(conn,
+                "UPDATE outbox SET status='sending' "
+                "WHERE id=? AND status='pending'");
+            if (!upd.valid()) continue;
+            upd.bindInt64(1, row.id);
+            if (upd.execute() && upd.affectedRows() == 1) {
+                claimed.push_back(row);
+            }
+        }
+        db_->release(std::move(conn));
 
-            // 同步等 Kafka delivery 太慢；这里用异步 produce + 在 dr_cb 内更新 DB
-            // 简化：每行用一个 promise/future 同步等
-            // 但为吞吐：批量 produce，结束后用单独 UPDATE 标 sent
-            auto* ctx = new RelayCtx{id, this};
-            bool queued = kafka_->produce(topic, key, payload,
+        // 3) 异步 produce 已抢占的行
+        for (auto& row : claimed) {
+            auto* ctx = new RelayCtx{row.id, this};
+            bool queued = kafka_->produce(row.topic, row.key, row.payload,
                 [ctx](bool ok, const std::string& err) {
                     ctx->self->onDelivery(ctx->outboxId, ok, err);
                     delete ctx;
                 });
             if (!queued) {
-                // 入队失败 → 当作此次失败，下轮重试
                 delete ctx;
-                failedIds.emplace_back(id, "produce queue full");
+                // 入队失败 → 立刻把状态打回 pending，下轮重试
+                onDelivery(row.id, false, "local queue full");
             }
         }
-        result.reset();
-
-        // 不在这里直接 UPDATE — 让 dr_cb 异步走
-        db_->release(std::move(conn));
-        return processed;
+        return static_cast<int>(claimed.size());
     }
 
     struct RelayCtx {
@@ -153,7 +169,7 @@ private:
     void onDelivery(int64_t id, bool ok, const std::string& err) {
         auto conn = db_->acquire(1500);
         if (!conn || !conn->valid()) {
-            // 实际落库失败 → 下次 relay 还会拉到（pending 仍未变）
+            // 极端情况：连不上 DB。'sending' 行会卡着 → 启动时由 reclaimStuck 回收
             return;
         }
         if (ok) {
@@ -165,14 +181,36 @@ private:
             }
             relayed_.fetch_add(1);
         } else {
+            // 失败 → 状态回 pending，下次 drainOnce 重新抢占重试
             PreparedStatement stmt(conn,
-                "UPDATE outbox SET retry_count=retry_count+1, last_error=? WHERE id=?");
+                "UPDATE outbox SET status='pending', "
+                "retry_count=retry_count+1, last_error=? WHERE id=?");
             if (stmt.valid()) {
                 stmt.bindString(1, err.substr(0, 500));
                 stmt.bindInt64(2, id);
                 stmt.execute();
             }
             failed_.fetch_add(1);
+        }
+        db_->release(std::move(conn));
+    }
+
+    /// 启动时回收"sending"卡死的行（前次进程崩溃 / OOM 留下的）。
+    /// 调用时机：start() 第一次 drainOnce 之前。把 status='sending' 且
+    /// 时间超过阈值的打回 'pending'。
+    void reclaimStuckSending(int olderThanSec = 60) {
+        auto conn = db_->acquire(1500);
+        if (!conn || !conn->valid()) return;
+        PreparedStatement stmt(conn,
+            "UPDATE outbox SET status='pending' "
+            "WHERE status='sending' AND created_at < NOW(3) - INTERVAL ? SECOND");
+        if (stmt.valid()) {
+            stmt.bindInt64(1, olderThanSec);
+            stmt.execute();
+            if (stmt.affectedRows() > 0) {
+                std::cerr << "[outbox] reclaimed " << stmt.affectedRows()
+                          << " rows stuck in 'sending'\n";
+            }
         }
         db_->release(std::move(conn));
     }

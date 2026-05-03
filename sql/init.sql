@@ -102,7 +102,7 @@ CREATE TABLE IF NOT EXISTS outbox (
     topic VARCHAR(64) NOT NULL COMMENT 'Kafka topic，例 im.messages',
     msg_key VARCHAR(64) NOT NULL COMMENT 'Kafka partition key（conv_id / group_id 等）',
     payload MEDIUMTEXT NOT NULL COMMENT '已序列化业务消息 JSON',
-    status ENUM('pending','sent','failed') NOT NULL DEFAULT 'pending',
+    status ENUM('pending','sending','sent','failed') NOT NULL DEFAULT 'pending',
     retry_count INT NOT NULL DEFAULT 0,
     created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     sent_at DATETIME(3) NULL,
