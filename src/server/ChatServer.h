@@ -39,6 +39,7 @@
 #include "server/InstanceRouter.h"
 #ifdef MUDUO_IM_HAS_KAFKA
 #include "server/OutboxService.h"
+#include "server/SagaCoordinator.h"
 #include "util/KafkaProducer.h"
 #include "util/KafkaConsumer.h"
 #endif
@@ -182,6 +183,25 @@ public:
         outboxService_ = std::make_unique<OutboxService>(mysqlPool_, kafkaProducer_);
         outboxService_->start();
         std::cerr << "[outbox] enabled (kafka=" << kafkaBrokers.front() << ")\n";
+    }
+
+    /**
+     * @brief Phase 6.1b: 启用 Saga 编排器（多步业务流的最终一致性）
+     *
+     * 启用后：
+     *   - groupService_.createGroup() 走 saga 路径（INSERT groups → INSERT group_members
+     *     两步 + 各自 compensation；任意一步失败会反向回滚）
+     *   - 启动期 recoverIncomplete() 扫 saga_log 续跑/补偿崩溃残留
+     */
+    void enableSaga() {
+        sagaCoord_ = std::make_unique<SagaCoordinator>(mysqlPool_);
+        groupService_.setSagaCoordinator(sagaCoord_.get());
+        // 启动期检查并续跑 / 补偿崩溃残留 saga
+        int handled = sagaCoord_->recoverIncomplete();
+        if (handled > 0) {
+            std::cerr << "[saga] recovered " << handled << " incomplete saga(s) on startup\n";
+        }
+        std::cerr << "[saga] coordinator enabled\n";
     }
 
     /**
@@ -2584,6 +2604,7 @@ private:
     std::shared_ptr<KafkaProducer> kafkaProducer_;          ///< Phase 1.2 outbox/messages 总线
     std::unique_ptr<OutboxService>  outboxService_;         ///< Phase 1.2 outbox + relay
     std::unique_ptr<KafkaConsumer>  pushCmdConsumer_;       ///< Phase 1.5 订阅 im.push.commands
+    std::unique_ptr<SagaCoordinator> sagaCoord_;            ///< Phase 6.1b 分布式事务编排器
     /// Phase 1.6：true 时关 inline broadcast，让 push.cmd 成为唯一推送通路
     /// （前提：必须同时启用 push-router + pushCmdConsumer，否则消息送不到接收人）
     bool outboxOnlyMode_ = false;

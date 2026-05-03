@@ -197,6 +197,13 @@ int main(int argc, char* argv[]) {
     }
 #endif
 
+    // Phase 6.1b：Saga 编排器（默认开；env MUDUO_IM_SAGA=0 关闭，回退到 legacy 顺序写）
+    bool sagaOn = true;
+    if (const char* e = std::getenv("MUDUO_IM_SAGA")) {
+        sagaOn = !(std::string(e) == "0" || std::string(e) == "false");
+    }
+    if (sagaOn) server.enableSaga();
+
     server.start();
 
     std::cout << "=== muduo-im ===" << std::endl;

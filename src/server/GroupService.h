@@ -6,6 +6,7 @@
 #pragma once
 
 #include "pool/MySQLPool.h"
+#include "server/SagaCoordinator.h"
 #include <nlohmann/json.hpp>
 #include <memory>
 #include <vector>
@@ -25,6 +26,17 @@ using json = nlohmann::json;
 class GroupService {
 public:
     explicit GroupService(std::shared_ptr<MySQLPool> db) : db_(db) {}
+
+    /**
+     * @brief 注入 SagaCoordinator，启用 createGroup 的分布式事务路径（Phase 6.1b）
+     *
+     * 注入后 createGroup() 自动走 saga 流程；不注入退化为旧的两步顺序写。
+     * 在 ChatServer 启动时 setupSaga() 一次性注入。
+     */
+    void setSagaCoordinator(SagaCoordinator* coord) {
+        sagaCoord_ = coord;
+        if (sagaCoord_) registerCreateGroupSaga();
+    }
 
     /**
      * @brief 查询用户所在的所有群组
@@ -73,10 +85,17 @@ public:
     json createGroup(int64_t ownerId, const std::string& name) {
         if (name.empty()) return {{"success", false}, {"message", "name required"}};
 
+        // Phase 6.1b：sagaCoord_ 注入了就走 saga 路径
+        if (sagaCoord_) return createGroupViaSaga(ownerId, name);
+        return createGroupLegacy(ownerId, name);
+    }
+
+private:
+    /// 旧两步顺序写（无原子保证；仍保留作为 sagaCoord 没注入时的兜底）
+    json createGroupLegacy(int64_t ownerId, const std::string& name) {
         auto conn = db_->acquire(3000);
         if (!conn || !conn->valid()) return {{"success", false}, {"message", "db error"}};
 
-        // 使用 PreparedStatement 防 SQL 注入
         PreparedStatement stmt(conn, "INSERT INTO `groups` (name, owner_id) VALUES (?, ?)");
         if (!stmt.valid()) {
             db_->release(std::move(conn));
@@ -90,13 +109,122 @@ public:
         }
         int64_t groupId = stmt.lastInsertId();
 
-        // 创建者自动加入群（只有 int64 参数，字符串拼接安全）
         conn->execute("INSERT INTO group_members (group_id, user_id) VALUES ("
             + std::to_string(groupId) + "," + std::to_string(ownerId) + ")");
         db_->release(std::move(conn));
 
         return {{"success", true}, {"groupId", groupId}};
     }
+
+    /// Saga 路径：2 步 + 各自 compensation
+    /// step 1 失败 → 无副作用
+    /// step 2 失败 → 反向 DELETE step 1 写入的 groups 行
+    /// 进程崩溃在 step 1 commit 之后、step 2 之前 → recover() 续跑 step 2
+    json createGroupViaSaga(int64_t ownerId, const std::string& name) {
+        nlohmann::json payload = {
+            {"owner_id", ownerId},
+            {"name", name},
+            {"group_id", 0}        // step1 写完之后回填
+        };
+        int64_t sagaId = sagaCoord_->start("group_create", payload);
+        if (sagaId == 0) return {{"success", false}, {"message", "saga start failed"}};
+        bool ok = sagaCoord_->execute(sagaId);
+        if (!ok) {
+            return {{"success", false}, {"message", "saga failed (compensated)"},
+                    {"sagaId", sagaId}};
+        }
+        // 重新查 saga_log 拿回填后的 group_id
+        int64_t groupId = readGroupIdFromSaga(sagaId);
+        if (groupId == 0) {
+            return {{"success", false}, {"message", "saga done but group_id missing"}};
+        }
+        return {{"success", true}, {"groupId", groupId}, {"sagaId", sagaId}};
+    }
+
+    int64_t readGroupIdFromSaga(int64_t sagaId) {
+        auto c = db_->acquireRead(2000);
+        if (!c) return 0;
+        auto rs = c->query("SELECT payload FROM saga_log WHERE saga_id = "
+                           + std::to_string(sagaId));
+        int64_t gid = 0;
+        if (rs) {
+            MYSQL_ROW row = mysql_fetch_row(rs.get());
+            if (row && row[0]) {
+                try {
+                    auto p = nlohmann::json::parse(row[0]);
+                    gid = p.value("group_id", (int64_t)0);
+                } catch (...) {}
+            }
+        }
+        db_->release(std::move(c));
+        return gid;
+    }
+
+    void registerCreateGroupSaga() {
+        SagaCoordinator::Definition def;
+        def.name = "group_create";
+
+        // step 1: INSERT INTO groups → 把 group_id 回填到 saga payload
+        def.steps.push_back({
+            "insert_groups_row",
+            [](MySQLConnection::Ptr& c, SagaCoordinator::Context& ctx) -> bool {
+                std::string name = ctx.payload.value("name", "");
+                int64_t owner   = ctx.payload.value("owner_id", (int64_t)0);
+                if (name.empty() || owner == 0) {
+                    ctx.last_error = "missing name or owner_id";
+                    return false;
+                }
+                std::string sql = "INSERT INTO `groups` (name, owner_id) VALUES ('"
+                    + c->escape(name) + "', " + std::to_string(owner) + ")";
+                if (c->execute(sql) != 1) {
+                    ctx.last_error = "INSERT groups failed: " + c->lastError();
+                    return false;
+                }
+                ctx.payload["group_id"] = static_cast<int64_t>(c->lastInsertId());
+                return true;
+            },
+            // compensate: 删 step1 写入的 groups 行
+            [](MySQLConnection::Ptr& c, SagaCoordinator::Context& ctx) -> bool {
+                int64_t gid = ctx.payload.value("group_id", (int64_t)0);
+                if (gid == 0) return true;  // step1 还没写就失败 → 没东西要删
+                std::string sql = "DELETE FROM `groups` WHERE id = " + std::to_string(gid);
+                return c->execute(sql) >= 0;
+            }
+        });
+
+        // step 2: INSERT 创建者进 group_members
+        def.steps.push_back({
+            "insert_owner_membership",
+            [](MySQLConnection::Ptr& c, SagaCoordinator::Context& ctx) -> bool {
+                int64_t gid   = ctx.payload.value("group_id", (int64_t)0);
+                int64_t owner = ctx.payload.value("owner_id", (int64_t)0);
+                if (gid == 0 || owner == 0) {
+                    ctx.last_error = "missing group_id or owner_id at step2";
+                    return false;
+                }
+                std::string sql = "INSERT INTO group_members (group_id, user_id) VALUES ("
+                    + std::to_string(gid) + ", " + std::to_string(owner) + ")";
+                if (c->execute(sql) != 1) {
+                    ctx.last_error = "INSERT group_members failed: " + c->lastError();
+                    return false;
+                }
+                return true;
+            },
+            // compensate: 删 step2 写入的 group_members 行
+            [](MySQLConnection::Ptr& c, SagaCoordinator::Context& ctx) -> bool {
+                int64_t gid   = ctx.payload.value("group_id", (int64_t)0);
+                int64_t owner = ctx.payload.value("owner_id", (int64_t)0);
+                if (gid == 0 || owner == 0) return true;
+                std::string sql = "DELETE FROM group_members WHERE group_id = "
+                    + std::to_string(gid) + " AND user_id = " + std::to_string(owner);
+                return c->execute(sql) >= 0;
+            }
+        });
+
+        sagaCoord_->registerSaga(std::move(def));
+    }
+
+public:
 
     /**
      * @brief 加入群组
@@ -293,4 +421,5 @@ public:
 
 private:
     std::shared_ptr<MySQLPool> db_;
+    SagaCoordinator* sagaCoord_ = nullptr;   // Phase 6.1b — non-owning, 由 ChatServer setSagaCoordinator 注入
 };
