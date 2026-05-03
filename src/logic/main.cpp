@@ -13,8 +13,10 @@
 #include "util/Snowflake.h"
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstdlib>
 #include <iostream>
+#include <mutex>
 #include <nlohmann/json.hpp>
 #include <signal.h>
 #include <string>
@@ -26,6 +28,13 @@ static std::unique_ptr<grpc::Server> g_server;
 // 在 bidi stream 没断时会 hang，且本来就不 signal-safe。
 static std::atomic<bool> g_stop{false};
 static int               g_lastSig = 0;
+
+// 注册线程的协调状态：watcher 线程要在 SIGTERM 时立刻让 regThread 醒来
+// 并 deregister，然后再让它进入 Shutdown 流程（先把 etcd key 拿掉，
+// 给 gateway 1-2s 把流量切走，再 Shutdown 在飞 RPC）
+static std::atomic<bool>     g_regRunning{true};
+static std::mutex            g_regMu;
+static std::condition_variable g_regCv;
 
 static void onSignal(int sig) {
     g_lastSig = sig;
@@ -81,7 +90,7 @@ int main(int argc, char* argv[]) {
 
     // 自注册：默认走 RegistryService gRPC（W3.D1-D2）；
     // MUDUO_IM_USE_ETCD=1 时走 etcd lease+put 路径（Phase 3C）。
-    std::atomic<bool> regRunning{true};
+    // regRunning + cv 让 SIGTERM 来时 keepAlive sleep 立即被打断（Phase 4.1A）。
     std::thread regThread;
     std::string regAddr;
     if (const char* e = std::getenv("MUDUO_IM_REGISTRY_ADDR")) regAddr = e;
@@ -110,7 +119,7 @@ int main(int argc, char* argv[]) {
         if (const char* e = std::getenv("MUDUO_IM_ETCD_PORT"))   etcdPort  = std::atoi(e);
         if (const char* e = std::getenv("MUDUO_IM_ETCD_PREFIX")) apiPrefix = e;
 
-        regThread = std::thread([&regRunning, etcdHost, etcdPort, apiPrefix, advertised, instanceId]() {
+        regThread = std::thread([etcdHost, etcdPort, apiPrefix, advertised, instanceId]() {
             EtcdClient etcd(etcdHost, etcdPort, apiPrefix);
             std::string key = "services/logic/" + instanceId;
             nlohmann::json meta = {
@@ -121,10 +130,16 @@ int main(int argc, char* argv[]) {
             };
             std::string value = meta.dump();
 
+            // 可中断 sleep：sleep_ms 同时盯 g_regRunning，shutdown 来时立即返回
+            auto interruptibleSleep = [](std::chrono::milliseconds dur) {
+                std::unique_lock<std::mutex> lk(g_regMu);
+                g_regCv.wait_for(lk, dur, []{ return !g_regRunning.load(); });
+            };
+
             int64_t leaseId = 0;
-            int backoff = 1;
+            int backoffSec = 1;
             // grant + put（带退避重试，等 etcd 起来）
-            while (regRunning.load()) {
+            while (g_regRunning.load()) {
                 leaseId = etcd.grantLease(15);
                 if (leaseId > 0 && etcd.put(key, value, leaseId)) {
                     std::cerr << "[logic] etcd registered key=" << key
@@ -132,15 +147,15 @@ int main(int argc, char* argv[]) {
                               << " lease=" << leaseId << "\n";
                     break;
                 }
-                std::cerr << "[logic] etcd register failed, retry in " << backoff << "s\n";
-                std::this_thread::sleep_for(std::chrono::seconds(backoff));
-                backoff = std::min(backoff * 2, 30);
+                std::cerr << "[logic] etcd register failed, retry in " << backoffSec << "s\n";
+                interruptibleSleep(std::chrono::seconds(backoffSec));
+                backoffSec = std::min(backoffSec * 2, 30);
             }
             // KeepAlive 每 5s（lease TTL=15s，3 次容错）
             int keepFailures = 0;
-            while (regRunning.load() && leaseId != 0) {
-                std::this_thread::sleep_for(std::chrono::seconds(5));
-                if (!regRunning.load()) break;
+            while (g_regRunning.load() && leaseId != 0) {
+                interruptibleSleep(std::chrono::seconds(5));
+                if (!g_regRunning.load()) break;
                 int ttl = etcd.keepAlive(leaseId);
                 if (ttl <= 0) {
                     if (++keepFailures >= 3) {
@@ -154,17 +169,22 @@ int main(int argc, char* argv[]) {
                 }
             }
             // 退出前删 key（lease 也会过期，主动删一次为了即时下线）
-            etcd.del(key);
+            if (leaseId != 0) etcd.del(key);
             std::cerr << "[logic] etcd deregistered\n";
         });
     } else if (!regAddr.empty()) {
-        regThread = std::thread([&regRunning, regAddr, advertised, instanceId]() {
+        regThread = std::thread([regAddr, advertised, instanceId]() {
             auto ch = grpc::CreateChannel(regAddr, grpc::InsecureChannelCredentials());
             auto stub = im::RegistryService::NewStub(ch);
 
+            auto interruptibleSleep = [](std::chrono::milliseconds dur) {
+                std::unique_lock<std::mutex> lk(g_regMu);
+                g_regCv.wait_for(lk, dur, []{ return !g_regRunning.load(); });
+            };
+
             int64_t leaseId = 0;
-            int backoff = 1;
-            while (regRunning.load()) {
+            int backoffSec = 1;
+            while (g_regRunning.load()) {
                 im::RegisterRequest req;
                 auto* ep = req.mutable_ep();
                 ep->set_instance_id(instanceId);
@@ -182,13 +202,14 @@ int main(int argc, char* argv[]) {
                               << " lease=" << leaseId << "\n";
                     break;
                 }
-                std::cerr << "[logic] register failed, retry in " << backoff << "s\n";
-                std::this_thread::sleep_for(std::chrono::seconds(backoff));
-                backoff = std::min(backoff * 2, 30);
+                std::cerr << "[logic] register failed, retry in " << backoffSec << "s\n";
+                interruptibleSleep(std::chrono::seconds(backoffSec));
+                backoffSec = std::min(backoffSec * 2, 30);
             }
             // KeepAlive 周期（写一下心跳，registry 当前不强校验 TTL）
-            while (regRunning.load() && leaseId != 0) {
-                std::this_thread::sleep_for(std::chrono::seconds(10));
+            while (g_regRunning.load() && leaseId != 0) {
+                interruptibleSleep(std::chrono::seconds(10));
+                if (!g_regRunning.load()) break;
                 im::KeepAliveRequest kreq;
                 kreq.set_lease_id(leaseId);
                 im::KeepAliveResponse kresp;
@@ -207,22 +228,44 @@ int main(int argc, char* argv[]) {
         });
     }
 
-    // 监听 g_stop（被 signal handler 设置），普通线程上下文里调 Shutdown
-    // 给 5s deadline，避免 bidi stream（如 RegisterGateway）卡住 Shutdown 永久 hang
-    std::thread shutdownWatcher([]() {
+    // graceful 下线时序（Phase 4.1A）：
+    //   1. 收到 SIGTERM（g_stop=true）
+    //   2. 立刻让 regThread 醒来 → 它去 etcd.del / Deregister
+    //   3. join regThread —— 此时本实例已经从服务发现里消失
+    //   4. sleep gracePeriodMs —— 给 gateway 一次 pollOnce 的时间把流量切走
+    //   5. Shutdown(deadline=3s) —— drain 在飞 RPC，不再进新流量
+    int gracePeriodMs = 1500;
+    if (const char* e = std::getenv("MUDUO_IM_DRAIN_GRACE_MS")) gracePeriodMs = std::atoi(e);
+    std::thread shutdownWatcher([gracePeriodMs]() {
         while (!g_stop.load()) {
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
         }
-        std::cerr << "[logic] signal " << g_lastSig << ", shutdown(deadline=5s)\n";
+        std::cerr << "[logic] signal " << g_lastSig
+                  << ", graceful drain (gracePeriodMs=" << gracePeriodMs << ")\n";
+        // (2) 通知注册线程退出，让 etcd key 立即消失
+        {
+            std::lock_guard<std::mutex> lk(g_regMu);
+            g_regRunning.store(false);
+        }
+        g_regCv.notify_all();
+        // (4) 注册线程被外面 join；这里只睡 grace
+        std::this_thread::sleep_for(std::chrono::milliseconds(gracePeriodMs));
+        // (5) 现在 gateway 已经把流量切走，剩下的是已经在飞的 RPC
         if (g_server) {
-            g_server->Shutdown(std::chrono::system_clock::now() + std::chrono::seconds(5));
+            std::cerr << "[logic] shutdown(deadline=3s)\n";
+            g_server->Shutdown(std::chrono::system_clock::now() + std::chrono::seconds(3));
         }
     });
 
     g_server->Wait();
-    g_stop.store(true);  // 让 watcher 线程在 Wait 自然返回时也退出
+    // Wait() 自然返回（非 signal-driven）时也得让两个线程下来
+    g_stop.store(true);
+    {
+        std::lock_guard<std::mutex> lk(g_regMu);
+        g_regRunning.store(false);
+    }
+    g_regCv.notify_all();
     if (shutdownWatcher.joinable()) shutdownWatcher.join();
-    regRunning = false;
     if (regThread.joinable()) regThread.join();
     std::cerr << "[logic] stopped\n";
     return 0;

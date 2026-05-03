@@ -11,6 +11,7 @@
 #include "net/EventLoop.h"
 #include "websocket/WebSocketServer.h"
 #include <atomic>
+#include <chrono>
 #include <cstdlib>
 #include <iostream>
 #include <map>
@@ -19,11 +20,18 @@
 #include <set>
 #include <signal.h>
 #include <string>
+#include <thread>
 
-static EventLoop* g_loop = nullptr;
+static EventLoop*        g_loop = nullptr;
+static std::atomic<bool> g_stop{false};
+static int               g_lastSig = 0;
+
+// signal handler 只设 flag —— 不直接调 g_loop->quit()。
+// 因为我们要先在另一个线程里发 ws close frame 给所有客户端，
+// 等几百毫秒让客户端切到别的 gateway，再让 loop 退出。
 static void onSignal(int sig) {
-    std::cerr << "[gateway] signal " << sig << ", quit loop\n";
-    if (g_loop) g_loop->quit();
+    g_lastSig = sig;
+    g_stop.store(true);
 }
 
 static std::map<std::string, std::string> parseQuery(const std::string& path) {
@@ -224,8 +232,37 @@ int main(int argc, char* argv[]) {
               "id=" + gatewayId + " ws_port=" + std::to_string(wsPort) +
               " logic=" + logicAddr);
 
+    // graceful 下线时序（Phase 4.1B）：
+    //   1. SIGTERM → g_stop=true
+    //   2. watcher 在 loop 线程里发 close(1001 going_away) 给所有 ws session
+    //   3. 等 gracePeriodMs，让客户端去重连别的 gateway
+    //   4. quit loop → 退出主线
+    int wsGraceMs = 800;
+    if (const char* e = std::getenv("MUDUO_IM_DRAIN_GRACE_MS")) wsGraceMs = std::atoi(e);
+    std::thread shutdownWatcher([&wsServer, &loop, wsGraceMs]() {
+        while (!g_stop.load()) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+        size_t n = wsServer.sessionCount();
+        std::cerr << "[gateway] signal " << g_lastSig
+                  << ", graceful drain " << n << " ws sessions"
+                  << " (gracePeriodMs=" << wsGraceMs << ")\n";
+        // 在 loop 线程里发 close frame —— ws 帧只能从 loop 线程 send
+        loop.runInLoop([&wsServer]() {
+            for (auto& s : wsServer.getAllSessions()) {
+                s->close(1001, "going_away");
+            }
+        });
+        // 给客户端一次往返时间断开 + 切 gateway
+        std::this_thread::sleep_for(std::chrono::milliseconds(wsGraceMs));
+        loop.quit();
+    });
+
     loop.loop();
+    g_stop.store(true);  // 让 watcher 在自然退出场景也下来
+    if (shutdownWatcher.joinable()) shutdownWatcher.join();
     if (pool) pool->stop();
     if (singleLogic) singleLogic->stop();
+    std::cerr << "[gateway] stopped\n";
     return 0;
 }
