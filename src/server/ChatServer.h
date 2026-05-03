@@ -44,6 +44,7 @@
 #include "pool/MySQLPool.h"
 #include "pool/RedisPool.h"
 #include "util/CircuitBreaker.h"
+#include "util/Metrics.h"
 #include "util/ThreadPool.h"
 #include "net/EventLoop.h"
 #include "net/InetAddress.h"
@@ -231,6 +232,21 @@ public:
             for (int64_t uid : users) {
                 onlineManager_.refreshOnline(uid);
             }
+        });
+
+        // 内部状态指标：每 5s 把 workerPool 当前队列深度 / 累计 drop 推到 Metrics。
+        // /metrics 端点（HttpServer.enableMetrics 已开）能直接读出来供 Prometheus 抓。
+        loop_->runEvery(5.0, [this]() {
+            auto& m = Metrics::instance();
+            m.gauge("chat_worker_pool_size", static_cast<int64_t>(workerPool_.size()));
+            m.gauge("chat_worker_pool_pending_tasks",
+                    static_cast<int64_t>(workerPool_.pendingTasks()));
+            // dropped_tasks 是 worker pool 内部累计计数；这里转成 Prometheus
+            // counter 的语义（gauge 暴露当前值即可，Prometheus rate() 会算斜率）
+            m.gauge("chat_worker_pool_dropped_tasks",
+                    static_cast<int64_t>(workerPool_.droppedTasks()));
+            m.gauge("chat_online_users",
+                    static_cast<int64_t>(onlineManager_.getOnlineUsers().size()));
         });
     }
 

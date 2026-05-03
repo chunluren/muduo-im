@@ -72,8 +72,20 @@ public:
         return git->second->Write(cmd);
     }
 
+    /// 当前注册到本 logic 的 gateway 数量（监控用）
+    size_t gatewayCount() const {
+        std::lock_guard<std::mutex> lk(mu_);
+        return gateways_.size();
+    }
+
+    /// 当前在某 gateway 上有 presence 记录的 uid 数量（监控用）
+    size_t userPresenceCount() const {
+        std::lock_guard<std::mutex> lk(mu_);
+        return userToGateway_.size();
+    }
+
 private:
-    std::mutex mu_;
+    mutable std::mutex mu_;
     std::unordered_map<std::string, StreamPtr> gateways_;
     std::unordered_map<int64_t, std::string> userToGateway_;
 };
