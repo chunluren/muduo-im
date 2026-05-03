@@ -291,6 +291,17 @@ public:
     }
 
     void start() {
+        // 打印激活的 mode 让运维一眼看清当前在跑什么路径
+        std::cerr << "[chat] mode flags:"
+                  << " instanceRouter=" << (instanceRouter_ ? "on" : "off")
+#ifdef MUDUO_IM_HAS_KAFKA
+                  << " outbox="         << (outboxService_ ? "on" : "off")
+                  << " pushCmdSub="     << (pushCmdConsumer_ ? "on" : "off")
+                  << " outboxOnly="     << (outboxOnlyMode_ ? "on" : "off")
+#endif
+                  << " es="             << (esClient_ ? "on" : "off")
+                  << "\n";
+
         // Phase 5.2: 启动审核词库热更新
         if (moderation_) moderation_->startReloadThread(60);
 
@@ -348,21 +359,21 @@ public:
         workerPool_.stop();
 
 #ifdef MUDUO_IM_HAS_KAFKA
-        // 5. 停 Kafka 组件（必须在 EventLoop 拆毁前结束 poll 线程，否则 UAF）
-        //    顺序：consumer → outbox relay → producer
-        //    consumer 不再产生新工作 → outbox relay 把 in-flight 都 dr_cb 完 → producer 干净 stop
-        if (pushCmdConsumer_) {
-            pushCmdConsumer_->stop();
-            pushCmdConsumer_.reset();
-        }
-        if (outboxService_) {
-            outboxService_->stop();
-            outboxService_.reset();
-        }
-        if (kafkaProducer_) {
-            kafkaProducer_->stop();
-            kafkaProducer_.reset();
-        }
+        // 5. 停 Kafka 组件 — 顺序对 lifetime 至关重要：
+        //   (a) consumer 先 stop：不再有新 ws push.cmd 投递
+        //   (b) outboxService stop：relay 线程不再 produce 新消息（停接 in-flight）
+        //   (c) **kafkaProducer stop（含 flush 5s）**：把所有 in-flight produce 排空，
+        //       触发它们的 dr_cb 在**outboxService_ 还活着**时回调，更新 outbox 行
+        //   (d) 最后 reset 智能指针，按 c → b → a 反序销毁
+        // 之前的 bug：先 reset(outboxService_) 再 stop(kafkaProducer_)，dr_cb fire
+        //            时 ctx->self 已经是悬空指针 → UAF
+        if (pushCmdConsumer_)  pushCmdConsumer_->stop();
+        if (outboxService_)    outboxService_->stop();
+        if (kafkaProducer_)    kafkaProducer_->stop();   // flush + drain dr_cb
+        // 现在所有异步回调都已 fire 完，安全销毁
+        pushCmdConsumer_.reset();
+        kafkaProducer_.reset();
+        outboxService_.reset();    // 必须最后 — dr_cb 可能调它的 onDelivery
 #endif
 
         // 6. 退出 EventLoop
