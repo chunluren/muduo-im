@@ -337,7 +337,25 @@ public:
         // 4. 停 worker pool（drain 已入队任务）
         workerPool_.stop();
 
-        // 5. 退出 EventLoop
+#ifdef MUDUO_IM_HAS_KAFKA
+        // 5. 停 Kafka 组件（必须在 EventLoop 拆毁前结束 poll 线程，否则 UAF）
+        //    顺序：consumer → outbox relay → producer
+        //    consumer 不再产生新工作 → outbox relay 把 in-flight 都 dr_cb 完 → producer 干净 stop
+        if (pushCmdConsumer_) {
+            pushCmdConsumer_->stop();
+            pushCmdConsumer_.reset();
+        }
+        if (outboxService_) {
+            outboxService_->stop();
+            outboxService_.reset();
+        }
+        if (kafkaProducer_) {
+            kafkaProducer_->stop();
+            kafkaProducer_.reset();
+        }
+#endif
+
+        // 6. 退出 EventLoop
         loop_->quit();
     }
 

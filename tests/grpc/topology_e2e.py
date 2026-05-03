@@ -13,7 +13,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from websocket import create_connection
 
 GW_A = os.environ.get("GW_A", "ws://127.0.0.1:9091/ws")
-GW_B = os.environ.get("GW_B", "ws://127.0.0.1:9092/ws")
+# gateway-B 端口避开 Kafka 9092，改用 9192
+GW_B = os.environ.get("GW_B", "ws://127.0.0.1:9192/ws")
 N_PAIRS = int(os.environ.get("N_PAIRS", "20"))
 M_MSGS  = int(os.environ.get("M_MSGS", "10"))
 TIMEOUT = int(os.environ.get("TIMEOUT", "5"))

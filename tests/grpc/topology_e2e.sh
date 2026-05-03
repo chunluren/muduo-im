@@ -49,13 +49,15 @@ MUDUO_IM_GATEWAY_ID=gw-A MUDUO_IM_REGISTRY_ADDR=127.0.0.1:9200 \
 echo $! > "$LOG/gw-a.pid"
 
 MUDUO_IM_GATEWAY_ID=gw-B MUDUO_IM_REGISTRY_ADDR=127.0.0.1:9200 \
-  "$BUILD/muduo-im-gateway" 9092 &> "$LOG/gw-b.log" &
+  "$BUILD/muduo-im-gateway" 9192 &> "$LOG/gw-b.log" &
 echo $! > "$LOG/gw-b.pid"
 
 sleep 1.5
 
 echo "[topology] up. ports:"
-ss -ltn | grep -E ':(9091|9092|9100|9101|9200)\s' || true
+# 注意：本来 gateway-B 用 9092，但 Kafka KRaft 也默认监听 9092（Phase 1.1 起冲突），
+# 改用 9192 避开。客户端测试 GW_B 也要相应调整。
+ss -ltn | grep -E ':(9091|9192|9100|9101|9200)\s' || true
 echo "[topology] running e2e..."
 echo
 

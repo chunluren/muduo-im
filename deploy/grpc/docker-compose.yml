@@ -90,12 +90,12 @@ services:
 
   gateway-b:
     image: muduo-im-grpc:latest
-    command: ["/app/muduo-im-gateway", "9092"]
+    command: ["/app/muduo-im-gateway", "9192"]
     environment:
       MUDUO_IM_GATEWAY_ID: "gw-B"
       MUDUO_IM_REGISTRY_ADDR: "registry:9200"
     ports:
-      - "9092:9092"
+      - "9192:9192"
     depends_on:
       - registry
       - logic-a
