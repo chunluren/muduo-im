@@ -15,11 +15,13 @@
 #include "ConsistentHashRing.h"
 #include "LogicClient.h"
 #include "im/registry.grpc.pb.h"
+#include "util/EtcdClient.h"
 #include <atomic>
 #include <chrono>
 #include <iostream>
 #include <memory>
 #include <mutex>
+#include <nlohmann/json.hpp>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -34,10 +36,28 @@ public:
 
     ~LogicClientPool() { stop(); }
 
+    /// 改走 etcd 服务发现（替代默认的 gRPC RegistryService Watch）
+    /// 必须在 start() 之前调用
+    void enableEtcd(std::string host, int port,
+                    std::string apiPrefix = "/v3beta",
+                    std::string prefix = "services/logic/",
+                    int pollIntervalMs = 1000) {
+        etcdEnabled_      = true;
+        etcdHost_         = std::move(host);
+        etcdPort_         = port;
+        etcdApiPrefix_    = std::move(apiPrefix);
+        etcdPrefix_       = std::move(prefix);
+        etcdPollMs_       = pollIntervalMs;
+    }
+
     void start() {
         if (running_.exchange(true)) return;
-        bootstrap();
-        watchThread_ = std::thread([this]() { watchLoop(); });
+        if (etcdEnabled_) {
+            watchThread_ = std::thread([this]() { etcdPollLoop(); });
+        } else {
+            bootstrap();
+            watchThread_ = std::thread([this]() { watchLoop(); });
+        }
     }
 
     void stop() {
@@ -154,6 +174,78 @@ private:
         }
     }
 
+    /// 轮询 etcd prefix，diff 出 added/removed/updated → 复用 addEndpoint/removeEndpoint
+    void etcdPollLoop() {
+        EtcdClient etcd(etcdHost_, etcdPort_, etcdApiPrefix_);
+        // pollOnce 第一次调用时 lastSnapshot_ 为空 → 不会触发 cb；这里手动 bootstrap 一次
+        {
+            auto kvs = etcd.getPrefix(etcdPrefix_);
+            for (auto& kv : kvs) {
+                im::Endpoint ep;
+                if (parseEndpoint(kv.key, kv.value, ep)) addEndpoint(ep);
+            }
+            // 把首批写入 EtcdClient::lastSnapshot_，避免下一轮再触发 added
+            etcd.pollOnce(etcdPrefix_, [](auto&, auto&, auto&) {});
+        }
+
+        auto cb = [this](const std::vector<EtcdClient::KV>& added,
+                         const std::vector<std::string>& removedKeys,
+                         const std::vector<EtcdClient::KV>& updated) {
+            for (auto& kv : added) {
+                im::Endpoint ep;
+                if (parseEndpoint(kv.key, kv.value, ep)) addEndpoint(ep);
+            }
+            for (auto& key : removedKeys) {
+                std::string instId = instanceIdFromKey(key);
+                if (!instId.empty()) removeEndpoint(instId);
+            }
+            for (auto& kv : updated) {
+                // 简化：先 remove 再 add（与 watchLoop 行为一致）
+                im::Endpoint ep;
+                if (parseEndpoint(kv.key, kv.value, ep)) {
+                    removeEndpoint(ep.instance_id());
+                    addEndpoint(ep);
+                }
+            }
+        };
+
+        while (running_.load()) {
+            try {
+                etcd.pollOnce(etcdPrefix_, cb);
+            } catch (const std::exception& e) {
+                std::cerr << "[pool] etcd pollOnce failed: " << e.what() << "\n";
+            }
+            // 可中断 sleep（每 100ms 检查 running_）
+            int slept = 0;
+            while (running_.load() && slept < etcdPollMs_) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                slept += 100;
+            }
+        }
+    }
+
+    /// "services/logic/logic-pid-123" → "logic-pid-123"
+    std::string instanceIdFromKey(const std::string& key) const {
+        if (key.size() <= etcdPrefix_.size()) return {};
+        if (key.compare(0, etcdPrefix_.size(), etcdPrefix_) != 0) return {};
+        return key.substr(etcdPrefix_.size());
+    }
+
+    /// 把 etcd 里的 JSON value 解析成 im::Endpoint。失败返回 false
+    bool parseEndpoint(const std::string& key, const std::string& value,
+                       im::Endpoint& out) const {
+        auto j = nlohmann::json::parse(value, nullptr, false);
+        if (j.is_discarded() || !j.contains("addr")) {
+            std::cerr << "[pool] etcd value malformed key=" << key << "\n";
+            return false;
+        }
+        out.set_instance_id(j.value("instance", instanceIdFromKey(key)));
+        out.set_service(j.value("service", "logic"));
+        out.set_addr(j["addr"].get<std::string>());
+        out.set_weight(j.value("weight", 1));
+        return true;
+    }
+
     void addEndpoint(const im::Endpoint& ep) {
         std::lock_guard<std::mutex> lk(mu_);
         if (clients_.count(ep.addr())) return;
@@ -191,6 +283,14 @@ private:
     std::atomic<bool> running_{false};
     std::thread watchThread_;
     std::unique_ptr<grpc::ClientContext> watchCtx_;
+
+    // etcd 服务发现（可选，互斥于 RegistryService）
+    bool        etcdEnabled_   = false;
+    std::string etcdHost_;
+    int         etcdPort_      = 2379;
+    std::string etcdApiPrefix_ = "/v3beta";
+    std::string etcdPrefix_    = "services/logic/";
+    int         etcdPollMs_    = 1000;
 
     mutable std::mutex mu_;
     std::unordered_map<std::string, std::shared_ptr<LogicClient>> clients_;  // key = addr

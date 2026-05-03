@@ -103,10 +103,32 @@ int main(int argc, char* argv[]) {
                   << (ok ? " delivered" : " no_local_session") << "\n";
     };
 
-    // 两种模式：有 registry 走 pool（多 logic + 一致性 hash）；否则走单 logic
+    // 三种模式：
+    //   1. MUDUO_IM_USE_ETCD=1 → pool + etcd 服务发现（Phase 3D）
+    //   2. MUDUO_IM_REGISTRY_ADDR → pool + gRPC RegistryService（W3）
+    //   3. 否则 → 单 logic 直连
     std::unique_ptr<LogicClientPool> pool;
     std::unique_ptr<LogicClient> singleLogic;
-    if (!registryAddr.empty()) {
+    bool useEtcd = false;
+    if (const char* e = std::getenv("MUDUO_IM_USE_ETCD")) {
+        useEtcd = (std::string(e) == "1" || std::string(e) == "true");
+    }
+    if (useEtcd) {
+        std::string etcdHost = "127.0.0.1";
+        int         etcdPort = 2379;
+        std::string apiPrefix = "/v3beta";
+        std::string prefix    = "services/logic/";
+        if (const char* e = std::getenv("MUDUO_IM_ETCD_HOST"))   etcdHost  = e;
+        if (const char* e = std::getenv("MUDUO_IM_ETCD_PORT"))   etcdPort  = std::atoi(e);
+        if (const char* e = std::getenv("MUDUO_IM_ETCD_PREFIX")) apiPrefix = e;
+        if (const char* e = std::getenv("MUDUO_IM_LOGIC_KEY_PREFIX")) prefix = e;
+        // registryAddr 此处不需要，但 pool ctor 仍要一个值；传空字符串
+        pool.reset(new LogicClientPool("", gatewayId, pushCb));
+        pool->enableEtcd(etcdHost, etcdPort, apiPrefix, prefix);
+        pool->start();
+        std::cerr << "[gateway] using etcd " << etcdHost << ":" << etcdPort
+                  << " prefix=" << prefix << "\n";
+    } else if (!registryAddr.empty()) {
         pool.reset(new LogicClientPool(registryAddr, gatewayId, pushCb));
         pool->start();
         std::cerr << "[gateway] using registry " << registryAddr << "\n";

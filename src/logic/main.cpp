@@ -9,11 +9,13 @@
 #include "im/registry.grpc.pb.h"
 #include "common/Config.h"
 #include "pool/MySQLPool.h"
+#include "util/EtcdClient.h"
 #include "util/Snowflake.h"
 #include <atomic>
 #include <chrono>
 #include <cstdlib>
 #include <iostream>
+#include <nlohmann/json.hpp>
 #include <signal.h>
 #include <string>
 #include <thread>
@@ -72,23 +74,88 @@ int main(int argc, char* argv[]) {
     }
     std::cerr << "[logic] listening on " << addr << " mysql=" << dbCfg.host << ":" << dbCfg.port << "\n";
 
-    // 自注册到 RegistryService（W3.D1-D2）：MUDUO_IM_REGISTRY_ADDR 设了才走
+    // 自注册：默认走 RegistryService gRPC（W3.D1-D2）；
+    // MUDUO_IM_USE_ETCD=1 时走 etcd lease+put 路径（Phase 3C）。
     std::atomic<bool> regRunning{true};
     std::thread regThread;
     std::string regAddr;
     if (const char* e = std::getenv("MUDUO_IM_REGISTRY_ADDR")) regAddr = e;
     std::string instanceId = "logic-" + std::to_string(::getpid());
     if (const char* e = std::getenv("MUDUO_IM_LOGIC_INSTANCE_ID")) instanceId = e;
-    if (!regAddr.empty()) {
-        regThread = std::thread([&regRunning, regAddr, addr, instanceId]() {
+
+    // advertised host:port（替换 0.0.0.0 为可达地址）
+    std::string advertised = addr;
+    {
+        std::string ad = "127.0.0.1";
+        if (const char* e = std::getenv("MUDUO_IM_LOGIC_ADVERTISE_HOST")) ad = e;
+        auto colon = addr.find(':');
+        if (colon != std::string::npos) advertised = ad + addr.substr(colon);
+    }
+
+    bool useEtcd = false;
+    if (const char* e = std::getenv("MUDUO_IM_USE_ETCD")) {
+        useEtcd = (std::string(e) == "1" || std::string(e) == "true");
+    }
+
+    if (useEtcd) {
+        std::string etcdHost = "127.0.0.1";
+        int         etcdPort = 2379;
+        std::string apiPrefix = "/v3beta";
+        if (const char* e = std::getenv("MUDUO_IM_ETCD_HOST"))   etcdHost  = e;
+        if (const char* e = std::getenv("MUDUO_IM_ETCD_PORT"))   etcdPort  = std::atoi(e);
+        if (const char* e = std::getenv("MUDUO_IM_ETCD_PREFIX")) apiPrefix = e;
+
+        regThread = std::thread([&regRunning, etcdHost, etcdPort, apiPrefix, advertised, instanceId]() {
+            EtcdClient etcd(etcdHost, etcdPort, apiPrefix);
+            std::string key = "services/logic/" + instanceId;
+            nlohmann::json meta = {
+                {"service",  "logic"},
+                {"addr",     advertised},
+                {"weight",   1},
+                {"instance", instanceId},
+            };
+            std::string value = meta.dump();
+
+            int64_t leaseId = 0;
+            int backoff = 1;
+            // grant + put（带退避重试，等 etcd 起来）
+            while (regRunning.load()) {
+                leaseId = etcd.grantLease(15);
+                if (leaseId > 0 && etcd.put(key, value, leaseId)) {
+                    std::cerr << "[logic] etcd registered key=" << key
+                              << " advertise=" << advertised
+                              << " lease=" << leaseId << "\n";
+                    break;
+                }
+                std::cerr << "[logic] etcd register failed, retry in " << backoff << "s\n";
+                std::this_thread::sleep_for(std::chrono::seconds(backoff));
+                backoff = std::min(backoff * 2, 30);
+            }
+            // KeepAlive 每 5s（lease TTL=15s，3 次容错）
+            int keepFailures = 0;
+            while (regRunning.load() && leaseId != 0) {
+                std::this_thread::sleep_for(std::chrono::seconds(5));
+                if (!regRunning.load()) break;
+                int ttl = etcd.keepAlive(leaseId);
+                if (ttl <= 0) {
+                    if (++keepFailures >= 3) {
+                        std::cerr << "[logic] etcd keepalive failed 3x, re-grant\n";
+                        leaseId = etcd.grantLease(15);
+                        if (leaseId > 0) etcd.put(key, value, leaseId);
+                        keepFailures = 0;
+                    }
+                } else {
+                    keepFailures = 0;
+                }
+            }
+            // 退出前删 key（lease 也会过期，主动删一次为了即时下线）
+            etcd.del(key);
+            std::cerr << "[logic] etcd deregistered\n";
+        });
+    } else if (!regAddr.empty()) {
+        regThread = std::thread([&regRunning, regAddr, advertised, instanceId]() {
             auto ch = grpc::CreateChannel(regAddr, grpc::InsecureChannelCredentials());
             auto stub = im::RegistryService::NewStub(ch);
-            // 把监听地址里的 0.0.0.0 替换成本机 advertise 地址（默认 127.0.0.1）
-            std::string advertised = addr;
-            std::string ad = "127.0.0.1";
-            if (const char* e = std::getenv("MUDUO_IM_LOGIC_ADVERTISE_HOST")) ad = e;
-            auto colon = addr.find(':');
-            if (colon != std::string::npos) advertised = ad + addr.substr(colon);
 
             int64_t leaseId = 0;
             int backoff = 1;
