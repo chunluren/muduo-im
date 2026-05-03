@@ -1,0 +1,67 @@
+# Phase 1.1 dev Kafka — single broker, KRaft mode (no ZooKeeper)
+#
+# Production should be 3 broker + RF=3 + min.isr=2; here 1 broker is enough
+# to wire client code.
+#
+#   docker compose -f deploy/kafka/docker-compose.yml up -d
+#   docker compose -f deploy/kafka/docker-compose.yml ps
+#
+# Test from host:
+#   docker exec -it kafka-dev kafka-topics.sh --bootstrap-server localhost:9092 --list
+#   docker exec -it kafka-dev kafka-console-producer.sh --bootstrap-server localhost:9092 --topic im.messages
+#   docker exec -it kafka-dev kafka-console-consumer.sh --bootstrap-server localhost:9092 --topic im.messages --from-beginning
+
+services:
+  kafka:
+    image: bitnami/kafka:3.7
+    container_name: kafka-dev
+    ports:
+      - "9092:9092"          # PLAINTEXT broker (host -> container)
+      - "9094:9094"          # CONTROLLER (internal only, exposed for debug)
+    environment:
+      # KRaft 单节点模式
+      KAFKA_CFG_NODE_ID: "1"
+      KAFKA_CFG_PROCESS_ROLES: "broker,controller"
+      KAFKA_CFG_CONTROLLER_QUORUM_VOTERS: "1@kafka:9094"
+      KAFKA_CFG_LISTENERS: "PLAINTEXT://:9092,CONTROLLER://:9094"
+      KAFKA_CFG_ADVERTISED_LISTENERS: "PLAINTEXT://localhost:9092"
+      KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP: "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT"
+      KAFKA_CFG_CONTROLLER_LISTENER_NAMES: "CONTROLLER"
+      KAFKA_CFG_INTER_BROKER_LISTENER_NAME: "PLAINTEXT"
+
+      # 单节点：副本数只能 1，min.isr 只能 1
+      KAFKA_CFG_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
+      KAFKA_CFG_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: "1"
+      KAFKA_CFG_TRANSACTION_STATE_LOG_MIN_ISR: "1"
+      KAFKA_CFG_DEFAULT_REPLICATION_FACTOR: "1"
+      KAFKA_CFG_MIN_INSYNC_REPLICAS: "1"
+
+      # 自动创建 topic 关掉，强制显式 create（避免笔误生新 topic）
+      KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE: "false"
+
+      # 留 7 天的消息保留期
+      KAFKA_CFG_LOG_RETENTION_HOURS: "168"
+    volumes:
+      - kafka_data:/bitnami/kafka
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-broker-api-versions.sh --bootstrap-server localhost:9092 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
+
+  # kafka-ui （可选，调试时方便看 lag / topic / consumer group）
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: kafka-ui-dev
+    ports:
+      - "8090:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: dev
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
+    depends_on:
+      kafka:
+        condition: service_healthy
+
+volumes:
+  kafka_data:
