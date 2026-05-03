@@ -26,6 +26,7 @@
 #include "util/KafkaProducer.h"
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <iostream>
 #include <memory>
 #include <mutex>
@@ -61,6 +62,15 @@ public:
         stmt.bindString(2, key);
         stmt.bindString(3, payload);
         return stmt.execute() && stmt.affectedRows() > 0;
+        // 注意：不在这里 wake — 事务还没 commit，relay 的 SELECT 看不到这行。
+        // 调用方在 tx.commit() 之后调 outboxService_->wake() 才有意义。
+    }
+
+    /// 显式唤醒 relay（业务 commit 后调一次）。多次调用幂等。
+    void wake() {
+        std::lock_guard<std::mutex> lk(wakeMu_);
+        wakeFlag_ = true;
+        wakeCv_.notify_one();
     }
 
     /// 启动 relay 后台线程
@@ -77,6 +87,7 @@ public:
 
     void stop() {
         if (!running_.exchange(false)) return;
+        wake();  // 让 wait_for 立即返回
         if (thread_.joinable()) thread_.join();
     }
 
@@ -90,9 +101,13 @@ private:
         while (running_.load()) {
             int n = drainOnce();
             lastBatchSize_.store(n);
-            // 没拉到东西 → 睡 intervalMs；有的话立即下一轮（peak 期跟得上）
+            // 没拉到东西 → 在 cv 上 wait_for(intervalMs)，被 wake() 立即唤醒；
+            // 拉到东西就立即下一轮（peak 期跟得上）
             if (n == 0) {
-                std::this_thread::sleep_for(std::chrono::milliseconds(intervalMs_));
+                std::unique_lock<std::mutex> lk(wakeMu_);
+                wakeCv_.wait_for(lk, std::chrono::milliseconds(intervalMs_),
+                                  [this]() { return wakeFlag_ || !running_.load(); });
+                wakeFlag_ = false;
             }
         }
     }
@@ -224,4 +239,9 @@ private:
     std::atomic<uint64_t> relayed_{0};
     std::atomic<uint64_t> failed_{0};
     std::atomic<uint64_t> lastBatchSize_{0};
+
+    // Phase 1.7：事件驱动 wake。idle relay 不再死轮询。
+    std::mutex wakeMu_;
+    std::condition_variable wakeCv_;
+    bool wakeFlag_ = false;
 };

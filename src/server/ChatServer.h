@@ -1771,6 +1771,9 @@ private:
                                 conn, "im.messages", convKey, kafkaPayload.dump());
                             if (savedRow && outboxRow && tx.commit()) {
                                 persisted = true;
+                                // Phase 1.7：事务 commit 之后立即 wake relay，
+                                // 端到端延迟从 ~200ms 轮询拐到 ~ms 级
+                                outboxService_->wake();
                             }
                         }
                         mysqlPool_->release(std::move(conn));
