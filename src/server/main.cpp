@@ -191,6 +191,14 @@ int main(int argc, char* argv[]) {
                   << " group=" << group << std::endl;
         server.enablePushCommandSubscription({brokers}, group);
     }
+
+    // Phase 1.6 cutover：MUDUO_IM_OUTBOX_ONLY=1 关掉 inline broadcast + InstanceRouter，
+    // 让 push.cmd 成为唯一推送路径。前提是 OUTBOX 与 PUSH_CMD_SUB 都已开。
+    if (const char* on = std::getenv("MUDUO_IM_OUTBOX_ONLY"); on && std::string(on) == "1") {
+        std::cerr << "OutboxOnly mode enabled: inline broadcast/PubSub disabled,"
+                  << " push.cmd is sole delivery path\n";
+        server.setOutboxOnlyMode(true);
+    }
 #endif
 
     server.start();

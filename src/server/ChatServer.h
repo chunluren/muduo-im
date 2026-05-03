@@ -197,6 +197,16 @@ public:
      * @param kafkaBrokers   Kafka broker 列表
      * @param consumerGroup  消费组 ID；不同实例必须用不同组（每实例独立读取所有 cmd）
      */
+    /**
+     * @brief Phase 1.6 cutover：让 push.commands 成为收件人的唯一推送通路
+     *
+     * 启用后 handlePrivateMessage 不再 inline broadcastToUser / Pub/Sub；
+     * 全部依赖 push-router → im.push.commands → 本进程的 pushCmdConsumer。
+     * 必须同时调 enableOutbox() + enablePushCommandSubscription() 才有意义，
+     * 否则消息发不出去。
+     */
+    void setOutboxOnlyMode(bool on) { outboxOnlyMode_ = on; }
+
     void enablePushCommandSubscription(const std::vector<std::string>& kafkaBrokers,
                                         const std::string& consumerGroup) {
         pushCmdConsumer_ = std::make_unique<KafkaConsumer>(
@@ -1792,26 +1802,47 @@ private:
                 fwd["msgId"] = msgId;
                 fwd["timestamp"] = timestamp;
                 if (!replyTo.empty()) fwd["replyTo"] = replyTo;
-                int delivered = broadcastToUser(toUserId, fwd.dump());
 
-                // 多端同步：推给发送方的其他设备
+                // Phase 1.6 cutover：当 outboxOnlyMode_ 时，**收件人投递**完全交给
+                // push-router → im.push.commands → pushCmdConsumer → broadcastToUser。
+                // 这里跳过 inline broadcast 与 InstanceRouter Pub/Sub，避免重复投递。
+                // 多端同步（发送方自己其他设备）仍走 inline，因为：
+                //   1. 它只发给本进程持有的 session，不需要跨实例
+                //   2. 留 inline 让发送方多端的低延迟反馈不变（Kafka 往返成本省了）
+                int delivered = 0;
+                if (!outboxOnlyMode_ || !persisted) {
+                    delivered = broadcastToUser(toUserId, fwd.dump());
+                }
+
+                // 多端同步：推给发送方的其他设备（**始终 inline**，跟收件人路径无关）
                 for (auto& s : onlineManager_.getOtherSessions(fromUserId, senderDevice)) {
                     s->sendText(fwd.dump());
                 }
 
-                if (delivered == 0) {
-                    int crossDelivered = tryCrossInstanceBroadcast(toUserId, fwd.dump());
-                    if (crossDelivered == 0) {
-                        incrementUnread(toUserId, fromUserId);
-                        if (pushService_) {
-                            pushService_->notifyOffline(
-                                toUserId,
-                                "新消息",
-                                content.size() > 50 ? content.substr(0, 50) + "..." : content,
-                                json({{"msgId", msgId}, {"from", std::to_string(fromUserId)},
-                                      {"convType", "private"}}));
+                // 离线检测 + 跨实例兜底
+                // outboxOnlyMode 下：push.cmd 路径会处理跨实例投递，inline 跨实例 PUBLISH 跳过；
+                // 但离线推送（incrementUnread + pushService）仍要做，因为 push-router 当前没接 Push 路径。
+                if (!outboxOnlyMode_ || !persisted) {
+                    if (delivered == 0) {
+                        int crossDelivered = tryCrossInstanceBroadcast(toUserId, fwd.dump());
+                        if (crossDelivered == 0) {
+                            incrementUnread(toUserId, fromUserId);
+                            if (pushService_) {
+                                pushService_->notifyOffline(
+                                    toUserId,
+                                    "新消息",
+                                    content.size() > 50 ? content.substr(0, 50) + "..." : content,
+                                    json({{"msgId", msgId}, {"from", std::to_string(fromUserId)},
+                                          {"convType", "private"}}));
+                            }
                         }
                     }
+                } else {
+                    // outboxOnlyMode + persisted 成功：本地 broadcast 跳过了。
+                    // 离线判定也得跳过——push-router 处理后会把 cmd 推到所有 gateway，
+                    // 无 session 的 uid 自然没人投递；离线推送 / unread 留作 Phase 2 push-router
+                    // 增强（让 push-router 自己判断离线 → 走 push.notifyOffline）。
+                    // 当前此分支什么都不做，可能漏掉离线推送 → 见 §5.6 known gap。
                 }
             });
 
@@ -2514,6 +2545,9 @@ private:
     std::shared_ptr<KafkaProducer> kafkaProducer_;          ///< Phase 1.2 outbox/messages 总线
     std::unique_ptr<OutboxService>  outboxService_;         ///< Phase 1.2 outbox + relay
     std::unique_ptr<KafkaConsumer>  pushCmdConsumer_;       ///< Phase 1.5 订阅 im.push.commands
+    /// Phase 1.6：true 时关 inline broadcast，让 push.cmd 成为唯一推送通路
+    /// （前提：必须同时启用 push-router + pushCmdConsumer，否则消息送不到接收人）
+    bool outboxOnlyMode_ = false;
 #endif
     JwtRevocationService jwtRevocation_;  ///< jti 黑名单吊销服务
     std::unique_ptr<ESClient> esClient_;  ///< ES 客户端（Phase 4.4）；nullptr=未启用
