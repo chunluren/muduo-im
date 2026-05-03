@@ -45,6 +45,23 @@ public:
 
     static constexpr const char* kDefaultDevice = "default";
 
+    /**
+     * @brief 构造在线表 Redis key（Phase 2C：加 hashtag）
+     *
+     * `online:{uid}:dev` —— 大括号是 Redis Cluster 的 hashtag 语法，告诉
+     * cluster 只对 `{uid}` 部分做 slot 计算，让同一 uid 的所有 device key
+     * 落到同一 slot。单实例 Redis 把大括号当普通字符忽略，向下兼容。
+     *
+     * 重要：迁移期已存在的旧格式 key（无大括号）会自然过期（TTL 30s），不需要
+     * 手动迁移。
+     */
+    static std::string keyOnline(int64_t userId, const std::string& dev) {
+        return "online:{" + std::to_string(userId) + "}:" + dev;
+    }
+    static std::string keyOnlineUid(int64_t userId) {
+        return "online:{" + std::to_string(userId) + "}";
+    }
+
     explicit OnlineManager(std::shared_ptr<RedisPool> redis = nullptr,
                             std::string instanceId = "instance-0")
         : redis_(redis), instanceId_(std::move(instanceId)) {}
@@ -62,7 +79,7 @@ public:
             if (conn && conn->valid()) {
                 // online:{uid}:{device_id} = instance_id（带 TTL）
                 // 拆分 key 是因为 RedisPool 当前不支持 HSET，但语义等价
-                conn->set("online:" + std::to_string(userId) + ":" + dev,
+                conn->set(keyOnline(userId, dev),
                            instanceId_, kOnlineTtlSec);
                 redis_->release(std::move(conn));
             }
@@ -92,10 +109,10 @@ public:
         if (redis_) {
             auto conn = redis_->acquire(1000);
             if (conn && conn->valid()) {
-                conn->del("online:" + std::to_string(userId) + ":" + dev);
+                conn->del(keyOnline(userId, dev));
                 if (lastOne) {
                     // 兼容旧 key（v1 单 session 模式）
-                    conn->del("online:" + std::to_string(userId));
+                    conn->del(keyOnlineUid(userId));
                 }
                 redis_->release(std::move(conn));
             }
@@ -117,9 +134,9 @@ public:
             auto conn = redis_->acquire(1000);
             if (conn && conn->valid()) {
                 for (auto& d : devices) {
-                    conn->del("online:" + std::to_string(userId) + ":" + d);
+                    conn->del(keyOnline(userId, d));
                 }
-                conn->del("online:" + std::to_string(userId));
+                conn->del(keyOnlineUid(userId));
                 redis_->release(std::move(conn));
             }
         }
@@ -139,7 +156,7 @@ public:
             auto conn = redis_->acquire(1000);
             if (conn && conn->valid()) {
                 for (auto& d : devs) {
-                    conn->expire("online:" + std::to_string(userId) + ":" + d, kOnlineTtlSec);
+                    conn->expire(keyOnline(userId, d), kOnlineTtlSec);
                 }
                 redis_->release(std::move(conn));
             }
@@ -198,7 +215,7 @@ public:
         if (redis_) {
             auto conn = redis_->acquire(1000);
             if (conn && conn->valid()) {
-                bool online = conn->exists("online:" + std::to_string(userId));
+                bool online = conn->exists(keyOnlineUid(userId));
                 redis_->release(std::move(conn));
                 return online;
             }
@@ -262,7 +279,7 @@ public:
         if (redis_) {
             auto conn = redis_->acquire(1000);
             if (conn && conn->valid()) {
-                conn->del("online:" + std::to_string(userId) + ":" + deviceId);
+                conn->del(keyOnline(userId, deviceId));
                 redis_->release(std::move(conn));
             }
         }

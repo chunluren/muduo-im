@@ -1953,13 +1953,12 @@ private:
                         msgId, groupId, fromUserId, content, timestamp, mentionsJsonStr);
                 }
 
-                // 被 @ 用户额外计入 unread_mentions
+                // 被 @ 用户额外计入 unread_mentions（Phase 2C: hashtag {uid}）
                 if (!mentions.empty() && redisPool_) {
                     auto rconn = redisPool_->acquire(500);
                     if (rconn && rconn->valid()) {
                         for (auto uid : mentions) {
-                            rconn->incr("unread_mentions:" + std::to_string(uid)
-                                         + ":" + std::to_string(groupId));
+                            rconn->incr(keyUnreadMentions(uid, groupId));
                         }
                         redisPool_->release(std::move(rconn));
                     }
@@ -2374,12 +2373,22 @@ private:
     }
 
     // ==================== Redis Unread Count ====================
+    // Phase 2C: hashtag {userId} 让 Redis Cluster 把同一收件人的所有 unread
+    // 计数 / 推送状态都路由到同一 slot（同 uid 的所有 keys 都在一个分片）。
+    // 单实例 Redis 把大括号当普通字符忽略，向下兼容。
+
+    static std::string keyUnread(int64_t userId, int64_t peerId) {
+        return "unread:{" + std::to_string(userId) + "}:" + std::to_string(peerId);
+    }
+    static std::string keyUnreadMentions(int64_t uid, int64_t groupId) {
+        return "unread_mentions:{" + std::to_string(uid) + "}:" + std::to_string(groupId);
+    }
 
     void incrementUnread(int64_t userId, int64_t peerId) {
         if (!redisPool_) return;
         auto conn = redisPool_->acquire(1000);
         if (conn && conn->valid()) {
-            conn->incr("unread:" + std::to_string(userId) + ":" + std::to_string(peerId));
+            conn->incr(keyUnread(userId, peerId));
             redisPool_->release(std::move(conn));
         }
     }
@@ -2388,7 +2397,7 @@ private:
         if (!redisPool_) return;
         auto conn = redisPool_->acquire(1000);
         if (conn && conn->valid()) {
-            conn->del("unread:" + std::to_string(userId) + ":" + std::to_string(peerId));
+            conn->del(keyUnread(userId, peerId));
             redisPool_->release(std::move(conn));
         }
     }
@@ -2397,7 +2406,7 @@ private:
         if (!redisPool_) return 0;
         auto conn = redisPool_->acquire(1000);
         if (conn && conn->valid()) {
-            std::string val = conn->get("unread:" + std::to_string(userId) + ":" + std::to_string(peerId));
+            std::string val = conn->get(keyUnread(userId, peerId));
             redisPool_->release(std::move(conn));
             if (!val.empty()) return std::stoll(val);
         }

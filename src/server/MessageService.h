@@ -131,7 +131,7 @@ public:
      * @return json 数组，每个元素包含 msgId、from、to、content、timestamp
      */
     json getPrivateHistory(int64_t userId, int64_t peerId, int limit = 50, int64_t before = 0) {
-        auto conn = db_->acquire(3000);
+        auto conn = db_->acquireRead(3000);
         if (!conn || !conn->valid()) return json::array();
 
         std::string sql = "SELECT msg_id, from_user, to_user, content, timestamp FROM private_messages "
@@ -171,7 +171,7 @@ public:
      * @return json 数组，每个元素包含 msgId、from、content、timestamp
      */
     json getGroupHistory(int64_t groupId, int limit = 50, int64_t before = 0) {
-        auto conn = db_->acquire(3000);
+        auto conn = db_->acquireRead(3000);
         if (!conn || !conn->valid()) return json::array();
 
         std::string sql = "SELECT msg_id, from_user, content, timestamp FROM group_messages "
@@ -261,7 +261,7 @@ public:
      */
     json getReactions(const std::string& msgId) {
         json result = json::object();
-        auto conn = db_->acquire(2000);
+        auto conn = db_->acquireRead(2000);
         if (!conn || !conn->valid()) return result;
 
         auto res = conn->query(
@@ -442,7 +442,7 @@ public:
             return {{"success", false}, {"message", "keyword too short"}};
         }
 
-        auto conn = db_->acquire(3000);
+        auto conn = db_->acquireRead(3000);
         if (!conn || !conn->valid()) return {{"success", false}, {"message", "db error"}};
 
         std::string escaped = conn->escape(keyword);
