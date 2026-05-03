@@ -109,3 +109,19 @@ CREATE TABLE IF NOT EXISTS outbox (
     last_error VARCHAR(512) NULL,
     INDEX idx_status_created (status, created_at)
 ) ENGINE=InnoDB;
+
+-- Phase 6.1 Saga 编排器：多步业务流的状态持久化
+-- forward 步骤跟 saga_log 行 UPDATE 同事务写，保证"业务表 + saga_log"原子。
+-- 进程崩溃 → 重启 SagaCoordinator::recoverIncomplete() 扫 state IN
+-- ('running','compensating') 续跑或反向补偿。
+CREATE TABLE IF NOT EXISTS saga_log (
+    saga_id BIGINT PRIMARY KEY COMMENT 'Snowflake，全局唯一',
+    saga_type VARCHAR(64) NOT NULL COMMENT '注册的 saga 名，如 group_create',
+    state ENUM('running','compensating','done','failed') NOT NULL DEFAULT 'running',
+    current_step INT NOT NULL DEFAULT 0 COMMENT 'forward / compensate 当前进行到第几步',
+    payload MEDIUMTEXT NOT NULL COMMENT 'saga 上下文 JSON，跨步骤传递',
+    error_msg TEXT NULL,
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+    INDEX idx_state_updated (state, updated_at)
+) ENGINE=InnoDB;
