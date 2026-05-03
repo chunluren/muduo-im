@@ -21,10 +21,15 @@
 #include <thread>
 
 static std::unique_ptr<grpc::Server> g_server;
+// signal handler only sets the flag (async-signal-safe)；后面的 watcher
+// 线程在普通上下文里调 Shutdown(deadline)。直接在 handler 里调 Shutdown
+// 在 bidi stream 没断时会 hang，且本来就不 signal-safe。
+static std::atomic<bool> g_stop{false};
+static int               g_lastSig = 0;
 
 static void onSignal(int sig) {
-    std::cerr << "[logic] signal " << sig << ", shutdown\n";
-    if (g_server) g_server->Shutdown();
+    g_lastSig = sig;
+    g_stop.store(true);
 }
 
 int main(int argc, char* argv[]) {
@@ -202,7 +207,21 @@ int main(int argc, char* argv[]) {
         });
     }
 
+    // 监听 g_stop（被 signal handler 设置），普通线程上下文里调 Shutdown
+    // 给 5s deadline，避免 bidi stream（如 RegisterGateway）卡住 Shutdown 永久 hang
+    std::thread shutdownWatcher([]() {
+        while (!g_stop.load()) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+        std::cerr << "[logic] signal " << g_lastSig << ", shutdown(deadline=5s)\n";
+        if (g_server) {
+            g_server->Shutdown(std::chrono::system_clock::now() + std::chrono::seconds(5));
+        }
+    });
+
     g_server->Wait();
+    g_stop.store(true);  // 让 watcher 线程在 Wait 自然返回时也退出
+    if (shutdownWatcher.joinable()) shutdownWatcher.join();
     regRunning = false;
     if (regThread.joinable()) regThread.join();
     std::cerr << "[logic] stopped\n";
