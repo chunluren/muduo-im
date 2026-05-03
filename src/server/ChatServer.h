@@ -1694,6 +1694,7 @@ private:
     }
 
     void handleGroupMessage(const WsSessionPtr& session, const json& j, int64_t fromUserId) {
+        // ---- 快路径（IO 线程）：参数校验 + dedup + moderation 静态扫描 ----
         std::string toStr = j.value("to", "");
         std::string content = j.value("content", "");
         std::string replyTo = j.value("replyTo", "");
@@ -1723,105 +1724,121 @@ private:
             return;
         }
 
-        // Phase 5.2 内容审核
+        // 内容审核：checkText 是 AC 自动机纯 CPU，留 IO 线程
+        ContentModerationService::Result modResult = ContentModerationService::Pass;
+        std::string modReason;
+        std::vector<std::string> modWords;
         if (moderation_) {
             auto mod = moderation_->checkText(content);
-            moderation_->logModeration(fromUserId, "text", content,
-                                         mod.result, mod.reason, mod.matchedWords);
-            if (mod.result == ContentModerationService::Block) {
+            modResult = mod.result;
+            modReason = mod.reason;
+            modWords  = mod.matchedWords;
+            if (modResult == ContentModerationService::Block) {
                 session->sendText(Protocol::makeError(
-                    "group message blocked: " + mod.reason));
+                    "group message blocked: " + modReason));
                 return;
             }
         }
 
         int64_t timestamp = Protocol::nowMs();
+        json mentionsJson = j.contains("mentions") && j["mentions"].is_array()
+                                ? j["mentions"] : json::array();
 
-        // 解析并校验 mentions（@ 提醒）
-        // 客户端传 ["12345","67890"] 字符串数组，服务端：
-        // 1. 转 int64 集合
-        // 2. 过滤非群成员（防止 @ 群外人员）+ 自己（防自@）
-        // 3. 序列化为 JSON 数组持久化 + 推送时带 mention 标志
-        std::vector<int64_t> mentions;
-        std::string mentionsJsonStr;
-        if (j.contains("mentions") && j["mentions"].is_array()) {
-            auto memberSet = groupService_.getMemberIds(groupId);
-            std::unordered_set<int64_t> memberLookup(memberSet.begin(), memberSet.end());
-            for (auto& m : j["mentions"]) {
-                int64_t uid = 0;
-                try {
-                    if (m.is_string()) uid = std::stoll(m.get<std::string>());
-                    else if (m.is_number_integer()) uid = m.get<int64_t>();
-                } catch (...) { continue; }
-                if (uid <= 0 || uid == fromUserId) continue;
-                if (!memberLookup.count(uid)) continue;
-                mentions.push_back(uid);
-            }
-            if (!mentions.empty()) {
-                json arr = json::array();
-                for (auto uid : mentions) arr.push_back(uid);
-                mentionsJsonStr = arr.dump();
-            }
-        }
-
-        // Queue message (Redis) or direct save (fallback)
-        if (redisPool_) {
-            json queueItem = {
-                {"_type", "group"}, {"msgId", msgId}, {"groupId", groupId},
-                {"from", fromUserId}, {"content", content}, {"timestamp", timestamp}
-            };
-            if (!mentionsJsonStr.empty()) queueItem["mentions"] = mentionsJsonStr;
-            queueMessage(queueItem.dump());
-        } else {
-            messageService_.saveGroupMessage(msgId, groupId, fromUserId, content, timestamp, mentionsJsonStr);
-        }
-
-        // 被 @ 用户额外计入 unread_mentions（区分普通未读）
-        // 与现有 unread 保持一致：扁平 key `unread_mentions:{uid}:{groupId}` + incr
-        if (!mentions.empty() && redisPool_) {
-            auto rconn = redisPool_->acquire(500);
-            if (rconn && rconn->valid()) {
-                for (auto uid : mentions) {
-                    rconn->incr("unread_mentions:" + std::to_string(uid)
-                                 + ":" + std::to_string(groupId));
+        // ---- 慢路径：群成员查询 / DB 写 / mentions Redis incr / 写扩散广播 ----
+        // affinity 用 groupId：保证同一群的消息按 FIFO 处理
+        bool ok = workerPool_.submitAffinity(
+            static_cast<uint64_t>(groupId),
+            [this, session, msgId, clientMsgId, fromUserId, groupId,
+             content, replyTo, timestamp, modResult, modReason, modWords,
+             mentionsJson]() mutable {
+                // 审计 moderation
+                if (moderation_ && modResult != ContentModerationService::Pass) {
+                    moderation_->logModeration(fromUserId, "text", content,
+                                                modResult, modReason, modWords);
                 }
-                redisPool_->release(std::move(rconn));
-            }
-        }
 
-        // ACK 透传 clientMsgId
-        session->sendText(Protocol::makeAck(msgId, clientMsgId));
+                // 解析 mentions（需要查群成员，是 DB 调用）
+                std::vector<int64_t> mentions;
+                std::string mentionsJsonStr;
+                auto memberIds = groupService_.getMemberIds(groupId);
+                std::unordered_set<int64_t> memberLookup(memberIds.begin(), memberIds.end());
+                for (auto& m : mentionsJson) {
+                    int64_t uid = 0;
+                    try {
+                        if (m.is_string()) uid = std::stoll(m.get<std::string>());
+                        else if (m.is_number_integer()) uid = m.get<int64_t>();
+                    } catch (...) { continue; }
+                    if (uid <= 0 || uid == fromUserId) continue;
+                    if (!memberLookup.count(uid)) continue;
+                    mentions.push_back(uid);
+                }
+                if (!mentions.empty()) {
+                    json arr = json::array();
+                    for (auto uid : mentions) arr.push_back(uid);
+                    mentionsJsonStr = arr.dump();
+                }
 
-        // Forward to all online group members (skip sender)
-        auto memberIds = groupService_.getMemberIds(groupId);
-        std::unordered_set<int64_t> mentionSet(mentions.begin(), mentions.end());
-        for (int64_t memberId : memberIds) {
-            if (memberId == fromUserId) continue;
-            auto memberSessions = onlineManager_.getSessions(memberId);
-            if (memberSessions.empty()) continue;
+                // 持久化
+                if (redisPool_) {
+                    json queueItem = {
+                        {"_type", "group"}, {"msgId", msgId}, {"groupId", groupId},
+                        {"from", fromUserId}, {"content", content}, {"timestamp", timestamp}
+                    };
+                    if (!mentionsJsonStr.empty()) queueItem["mentions"] = mentionsJsonStr;
+                    queueMessage(queueItem.dump());
+                } else {
+                    messageService_.saveGroupMessage(
+                        msgId, groupId, fromUserId, content, timestamp, mentionsJsonStr);
+                }
 
-            // 每个接收者构造独立 fwd（mention 字段因人而异）
-            json fwd;
-            fwd["type"] = Protocol::GROUP_MSG;
-            fwd["from"] = std::to_string(fromUserId);
-            fwd["to"] = std::to_string(groupId);
-            fwd["content"] = content;
-            fwd["msgId"] = msgId;
-            fwd["timestamp"] = timestamp;
-            if (!replyTo.empty()) fwd["replyTo"] = replyTo;
-            if (!mentions.empty()) {
-                json arr = json::array();
-                for (auto uid : mentions) arr.push_back(std::to_string(uid));
-                fwd["mentions"] = arr;
-            }
-            if (mentionSet.count(memberId)) fwd["mention"] = true;
-            std::string payload = fwd.dump();
-            // Phase 3.1：推送给该成员所有设备
-            for (auto& s : memberSessions) s->sendText(payload);
+                // 被 @ 用户额外计入 unread_mentions
+                if (!mentions.empty() && redisPool_) {
+                    auto rconn = redisPool_->acquire(500);
+                    if (rconn && rconn->valid()) {
+                        for (auto uid : mentions) {
+                            rconn->incr("unread_mentions:" + std::to_string(uid)
+                                         + ":" + std::to_string(groupId));
+                        }
+                        redisPool_->release(std::move(rconn));
+                    }
+                }
+
+                // ACK
+                session->sendText(Protocol::makeAck(msgId, clientMsgId));
+
+                // 写扩散给在线成员（每人一份，因为 mention 字段因人而异）
+                std::unordered_set<int64_t> mentionSet(mentions.begin(), mentions.end());
+                for (int64_t memberId : memberIds) {
+                    if (memberId == fromUserId) continue;
+                    auto memberSessions = onlineManager_.getSessions(memberId);
+                    if (memberSessions.empty()) continue;
+
+                    json fwd;
+                    fwd["type"] = Protocol::GROUP_MSG;
+                    fwd["from"] = std::to_string(fromUserId);
+                    fwd["to"]   = std::to_string(groupId);
+                    fwd["content"] = content;
+                    fwd["msgId"] = msgId;
+                    fwd["timestamp"] = timestamp;
+                    if (!replyTo.empty()) fwd["replyTo"] = replyTo;
+                    if (!mentions.empty()) {
+                        json arr = json::array();
+                        for (auto uid : mentions) arr.push_back(std::to_string(uid));
+                        fwd["mentions"] = arr;
+                    }
+                    if (mentionSet.count(memberId)) fwd["mention"] = true;
+                    std::string payload = fwd.dump();
+                    for (auto& s : memberSessions) s->sendText(payload);
+                }
+            });
+
+        if (!ok) {
+            session->sendText(Protocol::makeError("server busy, retry later"));
         }
     }
 
     void handleFileMessage(const WsSessionPtr& session, const json& j, int64_t fromUserId) {
+        // 快路径：参数校验
         std::string toStr = j.value("to", "");
         std::string url = j.value("url", "");
         std::string filename = j.value("filename", "");
@@ -1835,43 +1852,58 @@ private:
         int64_t toUserId = 0;
         try { toUserId = std::stoll(toStr); } catch (...) {}
 
-        std::string msgId = Protocol::generateServerMsgId();  // Snowflake 时序有序
+        std::string msgId = Protocol::generateServerMsgId();
         int64_t timestamp = Protocol::nowMs();
 
-        // Save as private message with file URL as content
-        std::string content = json({{"url", url}, {"filename", filename}, {"fileSize", fileSize}}).dump();
-        messageService_.savePrivateMessage(msgId, fromUserId, toUserId, content, timestamp);
-
-        session->sendText(Protocol::makeAck(msgId));
-
-        broadcastToUser(toUserId, Protocol::makeFileMsg(fromUserId, toUserId, url, filename, fileSize, msgId));
+        // 慢路径（worker，affinity by fromUserId）：DB save + ACK + 广播
+        bool ok = workerPool_.submitAffinity(
+            static_cast<uint64_t>(fromUserId),
+            [this, session, msgId, fromUserId, toUserId, url, filename,
+             fileSize, timestamp]() {
+                std::string content = json({{"url", url}, {"filename", filename},
+                                             {"fileSize", fileSize}}).dump();
+                messageService_.savePrivateMessage(
+                    msgId, fromUserId, toUserId, content, timestamp);
+                session->sendText(Protocol::makeAck(msgId));
+                broadcastToUser(toUserId,
+                    Protocol::makeFileMsg(fromUserId, toUserId, url, filename,
+                                           fileSize, msgId));
+            });
+        if (!ok) {
+            session->sendText(Protocol::makeError("server busy, retry later"));
+        }
     }
 
     void handleRecall(const WsSessionPtr& session, const json& j, int64_t fromUserId) {
+        // 快路径：取 msgId
         std::string msgId = j.value("msgId", "");
         if (msgId.empty()) {
             session->sendText(Protocol::makeError("missing msgId"));
             return;
         }
 
-        // 先刷 Redis 消息队列到 MySQL，确保消息已入库
-        flushMessageQueue();
-
-        bool ok = messageService_.recallMessage(msgId, fromUserId);
+        // 慢路径（worker，affinity by fromUserId）：
+        // flushMessageQueue（确保消息已入库）+ recall + 广播给好友
+        bool ok = workerPool_.submitAffinity(
+            static_cast<uint64_t>(fromUserId),
+            [this, session, msgId, fromUserId]() {
+                flushMessageQueue();
+                bool recalled = messageService_.recallMessage(msgId, fromUserId);
+                if (!recalled) {
+                    session->sendText(Protocol::makeError(
+                        "recall failed (timeout or not your message)"));
+                    return;
+                }
+                std::string recallMsg = Protocol::makeRecall(msgId, fromUserId);
+                session->sendText(recallMsg);
+                auto friends = friendService_.getFriends(fromUserId);
+                for (auto& f : friends) {
+                    int64_t fid = f.value("userId", (int64_t)0);
+                    broadcastToUser(fid, recallMsg);
+                }
+            });
         if (!ok) {
-            session->sendText(Protocol::makeError("recall failed (timeout or not your message)"));
-            return;
-        }
-
-        // Notify sender
-        session->sendText(Protocol::makeRecall(msgId, fromUserId));
-
-        // Broadcast recall to all online friends (simplified: they'll remove the message)
-        auto friends = friendService_.getFriends(fromUserId);
-        std::string recallMsg = Protocol::makeRecall(msgId, fromUserId);
-        for (auto& f : friends) {
-            int64_t fid = f.value("userId", (int64_t)0);
-            broadcastToUser(fid, recallMsg);
+            session->sendText(Protocol::makeError("server busy, retry later"));
         }
     }
 
