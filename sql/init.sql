@@ -93,3 +93,19 @@ CREATE TABLE IF NOT EXISTS audit_log (
     INDEX idx_user_time (user_id, created_at),
     INDEX idx_action_time (action, created_at)
 ) ENGINE=InnoDB;
+
+-- Phase 1.2 Transactional Outbox：业务表写入 + outbox 行写入同事务，
+-- OutboxRelay 后台线程拉 status='pending' 行 → produce Kafka → 改 'sent'。
+-- 解决"DB 写成功但 Kafka 发失败"或反之的双写不一致。
+CREATE TABLE IF NOT EXISTS outbox (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    topic VARCHAR(64) NOT NULL COMMENT 'Kafka topic，例 im.messages',
+    msg_key VARCHAR(64) NOT NULL COMMENT 'Kafka partition key（conv_id / group_id 等）',
+    payload MEDIUMTEXT NOT NULL COMMENT '已序列化业务消息 JSON',
+    status ENUM('pending','sent','failed') NOT NULL DEFAULT 'pending',
+    retry_count INT NOT NULL DEFAULT 0,
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    sent_at DATETIME(3) NULL,
+    last_error VARCHAR(512) NULL,
+    INDEX idx_status_created (status, created_at)
+) ENGINE=InnoDB;

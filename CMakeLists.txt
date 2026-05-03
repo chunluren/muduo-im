@@ -115,6 +115,22 @@ if(WITH_GRPC)
     endif()
 endif()
 
+# Phase 1.2 Outbox: 找 librdkafka（可选，没装则 outbox 路径不可用，单体仍能跑）
+find_path(KAFKA_INCLUDE_DIR librdkafka/rdkafkacpp.h
+    PATHS /usr/include /usr/local/include)
+find_library(KAFKA_CPP_LIBRARY rdkafka++
+    PATHS /usr/lib /usr/lib/x86_64-linux-gnu /usr/local/lib)
+find_library(KAFKA_C_LIBRARY rdkafka
+    PATHS /usr/lib /usr/lib/x86_64-linux-gnu /usr/local/lib)
+if(KAFKA_INCLUDE_DIR AND KAFKA_CPP_LIBRARY AND KAFKA_C_LIBRARY)
+    set(KAFKA_FOUND TRUE)
+    add_compile_definitions(MUDUO_IM_HAS_KAFKA=1)
+    message(STATUS "librdkafka found: ${KAFKA_CPP_LIBRARY}")
+else()
+    set(KAFKA_FOUND FALSE)
+    message(STATUS "librdkafka not found, Outbox/Kafka path disabled")
+endif()
+
 # 主服务
 add_executable(muduo-im src/server/main.cpp)
 target_link_libraries(muduo-im
@@ -127,6 +143,10 @@ target_link_libraries(muduo-im
     argon2
     pthread
 )
+if(KAFKA_FOUND)
+    target_include_directories(muduo-im PRIVATE ${KAFKA_INCLUDE_DIR})
+    target_link_libraries(muduo-im ${KAFKA_CPP_LIBRARY} ${KAFKA_C_LIBRARY})
+endif()
 
 # WebSocket benchmark client
 add_executable(ws_bench benchmark/ws_bench.cpp)
@@ -147,6 +167,10 @@ foreach(TEST_FILE ${TEST_SOURCES})
         add_test(NAME ${TEST_NAME} COMMAND ${TEST_NAME})
         continue()
     endif()
+    # Phase 1.2 outbox 测试需要 librdkafka，没装就跳过
+    if(TEST_NAME STREQUAL "test_outbox_e2e" AND NOT KAFKA_FOUND)
+        continue()
+    endif()
     add_executable(${TEST_NAME} ${TEST_FILE})
     target_link_libraries(${TEST_NAME}
         mymuduo
@@ -158,5 +182,9 @@ foreach(TEST_FILE ${TEST_SOURCES})
         argon2
         pthread
     )
+    if(TEST_NAME STREQUAL "test_outbox_e2e" AND KAFKA_FOUND)
+        target_include_directories(${TEST_NAME} PRIVATE ${KAFKA_INCLUDE_DIR})
+        target_link_libraries(${TEST_NAME} ${KAFKA_CPP_LIBRARY} ${KAFKA_C_LIBRARY})
+    endif()
     add_test(NAME ${TEST_NAME} COMMAND ${TEST_NAME})
 endforeach()
