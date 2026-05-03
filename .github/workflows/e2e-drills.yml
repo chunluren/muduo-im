@@ -1,0 +1,153 @@
+name: E2E Drills
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch: {}
+
+jobs:
+  topology-e2e:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: ''
+          MYSQL_ALLOW_EMPTY_PASSWORD: 'yes'
+          MYSQL_DATABASE: muduo_im
+        ports: ['3306:3306']
+        options: >-
+          --health-cmd="mysqladmin ping" --health-interval=10s
+          --health-timeout=5s --health-retries=10
+      redis:
+        image: redis:6
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd="redis-cli ping" --health-interval=10s
+          --health-timeout=5s --health-retries=10
+
+    steps:
+    - uses: actions/checkout@v4
+      with: { submodules: recursive }
+
+    - name: Install build deps + etcd
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          build-essential cmake \
+          libssl-dev zlib1g-dev \
+          libmysqlclient-dev libhiredis-dev libargon2-dev \
+          libprotobuf-dev protobuf-compiler nlohmann-json3-dev \
+          etcd-server etcd-client \
+          python3-pip
+        pip3 install websocket-client
+
+    - name: Initialize MySQL schema
+      run: mysql -h 127.0.0.1 -u root muduo_im < sql/init.sql
+
+    - name: Start etcd
+      run: |
+        sudo systemctl start etcd
+        for i in {1..30}; do
+          curl -sf -m 1 -X POST http://127.0.0.1:2379/v3beta/maintenance/status -d '{}' \
+              >/dev/null 2>&1 && break
+          sleep 1
+        done
+
+    - name: Build (no gRPC for the e2e drills — they don't need WITH_GRPC)
+      run: |
+        mkdir -p build && cd build
+        # E2E drills need gRPC binaries
+        cmake .. -DCMAKE_BUILD_TYPE=Release -DWITH_GRPC=ON
+        make -j$(nproc) muduo-im-logic muduo-im-gateway
+
+    - name: Topology e2e (etcd discovery, 200 messages)
+      run: bash tests/etcd/topology_e2e.sh
+
+    - name: Multi-AZ e2e (same-AZ + fail-open)
+      run: bash tests/etcd/multi_az_e2e.sh
+
+    - name: Failover e2e (SIGTERM mid-traffic)
+      run: bash tests/etcd/failover_e2e.sh
+
+    - name: Dump logs on failure
+      if: failure()
+      run: |
+        echo "==== /tmp/muduo-im-* logs ===="
+        for d in /tmp/muduo-im-*; do
+          echo "--- $d ---"
+          ls -la "$d" 2>/dev/null
+          for f in "$d"/*.log; do
+            [[ -f $f ]] || continue
+            echo ">> $f"
+            tail -50 "$f" 2>/dev/null | grep -v MYSQL_OPT
+          done
+        done
+
+  redis-sentinel-drill:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+
+    steps:
+    - uses: actions/checkout@v4
+      with: { submodules: recursive }
+
+    - name: Install Redis (server + sentinel)
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y redis-server redis-tools netcat-openbsd
+
+    - name: Stop default redis (we run our own topology)
+      run: sudo systemctl stop redis-server || true
+
+    - name: Bring up Sentinel topology
+      run: bash deploy/redis-sentinel/up.sh
+
+    - name: Run failover drill
+      run: bash deploy/redis-sentinel/failover_drill.sh
+
+    - name: Dump logs on failure
+      if: failure()
+      run: |
+        for f in /tmp/redis-sentinel/*.log; do
+          echo ">> $f"
+          tail -50 "$f"
+        done
+
+  kafka-cluster-drill:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Download Kafka tarball
+      run: |
+        cd /tmp
+        wget -q https://archive.apache.org/dist/kafka/3.7.2/kafka_2.13-3.7.2.tgz
+        tar xzf kafka_2.13-3.7.2.tgz
+        echo "KAFKA_HOME=/tmp/kafka_2.13-3.7.2" >> $GITHUB_ENV
+
+    - name: Bring up 3-broker cluster
+      run: bash deploy/kafka/cluster-tarball/up.sh
+
+    - name: Init topics (RF=3)
+      run: bash deploy/kafka/cluster-tarball/init-topics.sh
+
+    - name: Rolling restart drill
+      env:
+        WAIT_DOWN: 10
+        WAIT_UP: 15
+        TOTAL_MSGS: 500
+      run: bash deploy/kafka/cluster-tarball/rolling_restart_drill.sh
+
+    - name: Dump broker logs on failure
+      if: failure()
+      run: |
+        for f in /tmp/kafka-cluster-tarball/*.log /tmp/kafka-rolling-drill/*.log; do
+          echo ">> $f"; tail -50 "$f" 2>/dev/null
+        done
