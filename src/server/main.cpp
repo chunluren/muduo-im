@@ -171,6 +171,16 @@ int main(int argc, char* argv[]) {
         }
     }
 
+#ifdef MUDUO_IM_HAS_KAFKA
+    // Phase 1.2 Outbox：MUDUO_IM_USE_OUTBOX=1 启用，broker 默认 localhost:9092
+    if (const char* on = std::getenv("MUDUO_IM_USE_OUTBOX"); on && std::string(on) == "1") {
+        std::string brokers = "localhost:9092";
+        if (const char* b = std::getenv("MUDUO_IM_KAFKA_BROKERS")) brokers = b;
+        std::cerr << "Outbox enabled: brokers=" << brokers << std::endl;
+        server.enableOutbox({brokers}, "muduo-im-" + std::to_string(::getpid()));
+    }
+#endif
+
     server.start();
 
     std::cout << "=== muduo-im ===" << std::endl;

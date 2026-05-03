@@ -37,6 +37,10 @@
 #include "server/PushService.h"
 #include "moderation/ContentModerationService.h"
 #include "server/InstanceRouter.h"
+#ifdef MUDUO_IM_HAS_KAFKA
+#include "server/OutboxService.h"
+#include "util/KafkaProducer.h"
+#endif
 #include <set>
 #include "http/HttpServer.h"
 #include "http/MultipartParser.h"
@@ -157,6 +161,28 @@ public:
             });
         instanceRouter_->start();
     }
+
+#ifdef MUDUO_IM_HAS_KAFKA
+    /**
+     * @brief Phase 1.2 Outbox：开启 Outbox + Kafka 路径
+     *
+     * 调用后 handlePrivateMessage 的慢路径会走"private_messages + outbox 同事务"
+     * 落库，OutboxRelay 后台异步推到 Kafka topic im.messages。Kafka 不可达时
+     * 已落 outbox 行不丢，relay 重试。
+     */
+    void enableOutbox(const std::vector<std::string>& kafkaBrokers,
+                      const std::string& clientId = "muduo-im") {
+        kafkaProducer_ = std::make_shared<KafkaProducer>(kafkaBrokers, clientId);
+        if (!kafkaProducer_->start()) {
+            std::cerr << "[outbox] kafka producer start failed; outbox disabled\n";
+            kafkaProducer_.reset();
+            return;
+        }
+        outboxService_ = std::make_unique<OutboxService>(mysqlPool_, kafkaProducer_);
+        outboxService_->start();
+        std::cerr << "[outbox] enabled (kafka=" << kafkaBrokers.front() << ")\n";
+    }
+#endif
 
     /// 私聊推送时如本地无在线 session，尝试跨实例 publish
     int tryCrossInstanceBroadcast(int64_t uid, const std::string& payload) {
@@ -1644,16 +1670,54 @@ private:
                                                 modResult, modReason, modWords);
                 }
 
-                // 持久化（Redis 队列首选；否则直写 MySQL）
-                if (redisPool_) {
-                    json queueItem = {
-                        {"_type", "private"}, {"msgId", msgId}, {"from", fromUserId},
-                        {"to", toUserId}, {"content", content}, {"timestamp", timestamp}
-                    };
-                    queueMessage(queueItem.dump());
-                } else {
-                    messageService_.savePrivateMessage(
-                        msgId, fromUserId, toUserId, content, timestamp);
+                // 持久化路径优先级：
+                //   1. Outbox + Kafka（Phase 1.2，启用了 outboxService_）
+                //   2. Redis msg_queue 批写（旧路径，过渡期）
+                //   3. 直写 MySQL（裸兜底）
+                bool persisted = false;
+#ifdef MUDUO_IM_HAS_KAFKA
+                if (outboxService_) {
+                    auto conn = mysqlPool_->acquire(2000);
+                    if (conn && conn->valid()) {
+                        TransactionGuard tx(conn);
+                        if (tx.active()) {
+                            bool savedRow = messageService_.savePrivateMessageTx(
+                                conn, msgId, fromUserId, toUserId, content, timestamp);
+                            // outbox payload：下游（persister/push-router/...）需要的信息
+                            // sorted(uid_a, uid_b) 作 conv key 保证 (A→B) 与 (B→A) 同分区
+                            int64_t lo = std::min(fromUserId, toUserId);
+                            int64_t hi = std::max(fromUserId, toUserId);
+                            std::string convKey = std::to_string(lo) + ":" + std::to_string(hi);
+                            json kafkaPayload = {
+                                {"type", "private"},
+                                {"msgId", msgId},
+                                {"convId", convKey},
+                                {"from", fromUserId},
+                                {"to", toUserId},
+                                {"content", content},
+                                {"timestamp", timestamp}
+                            };
+                            bool outboxRow = outboxService_->insertOutbox(
+                                conn, "im.messages", convKey, kafkaPayload.dump());
+                            if (savedRow && outboxRow && tx.commit()) {
+                                persisted = true;
+                            }
+                        }
+                        mysqlPool_->release(std::move(conn));
+                    }
+                }
+#endif
+                if (!persisted) {
+                    if (redisPool_) {
+                        json queueItem = {
+                            {"_type", "private"}, {"msgId", msgId}, {"from", fromUserId},
+                            {"to", toUserId}, {"content", content}, {"timestamp", timestamp}
+                        };
+                        queueMessage(queueItem.dump());
+                    } else {
+                        messageService_.savePrivateMessage(
+                            msgId, fromUserId, toUserId, content, timestamp);
+                    }
                 }
 
                 // ACK（sendText 是 loop-safe，会自动 runInLoop 切回 IO 线程）
@@ -2386,6 +2450,10 @@ private:
     std::shared_ptr<PushService> pushService_;      ///< Phase 5.1
     std::shared_ptr<ContentModerationService> moderation_;  ///< Phase 5.2
     std::unique_ptr<InstanceRouter> instanceRouter_;        ///< Phase 1.3
+#ifdef MUDUO_IM_HAS_KAFKA
+    std::shared_ptr<KafkaProducer> kafkaProducer_;          ///< Phase 1.2 outbox/messages 总线
+    std::unique_ptr<OutboxService>  outboxService_;         ///< Phase 1.2 outbox + relay
+#endif
     JwtRevocationService jwtRevocation_;  ///< jti 黑名单吊销服务
     std::unique_ptr<ESClient> esClient_;  ///< ES 客户端（Phase 4.4）；nullptr=未启用
 
