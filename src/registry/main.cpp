@@ -31,7 +31,11 @@ int main(int argc, char* argv[]) {
         std::cerr << "[registry] failed to bind " << addr << "\n";
         return 1;
     }
-    std::cerr << "[registry] listening on " << addr << "\n";
+    service.startGc();   // 启动 TTL GC 线程（每 5s 扫，超 30s 没刷新视为死亡）
+    std::cerr << "[registry] listening on " << addr
+              << " (ttl=" << RegistryServiceImpl::kTtlSec
+              << "s, gc=" << RegistryServiceImpl::kGcIntervalSec << "s)\n";
     g_server->Wait();
+    service.stopGc();
     return 0;
 }
