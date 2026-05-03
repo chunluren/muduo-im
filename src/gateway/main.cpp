@@ -10,6 +10,7 @@
 #include "common/Logging.h"
 #include "http/HttpServer.h"
 #include "net/EventLoop.h"
+#include "util/Metrics.h"
 #include "websocket/WebSocketServer.h"
 #include <atomic>
 #include <chrono>
@@ -176,8 +177,25 @@ int main(int argc, char* argv[]) {
         resp.setBody("{\"status\":\"healthy\",\"id\":\"" + gatewayId +
                      "\",\"ws_sessions\":" + std::to_string(n) + "}");
     });
+    healthServer.enableMetrics();   // /metrics 暴露 Prometheus 格式
     healthServer.start();
-    std::cerr << "[gateway] /health on :" << healthPort << "\n";
+    std::cerr << "[gateway] /health and /metrics on :" << healthPort << "\n";
+
+    // 周期把 gateway 自身状态推到 Metrics（HttpCore 已经自动算 http_requests_total）
+    loop.runEvery(5.0, [&wsServer, &pool, &singleLogic, &gatewayId]() {
+        auto& m = Metrics::instance();
+        m.gauge("gateway_ws_sessions_current", static_cast<int64_t>(wsServer.sessionCount()));
+        m.gauge("gateway_draining", g_draining.load() ? 1 : 0);
+        if (pool) {
+            m.gauge("gateway_logic_pool_size", static_cast<int64_t>(pool->size()));
+        } else if (singleLogic) {
+            m.gauge("gateway_logic_pool_size", 1);
+        } else {
+            m.gauge("gateway_logic_pool_size", 0);
+        }
+        // 标识本进程的 gateway id（不用 label，Prometheus 抓时已经按 :port 区分实例）
+        (void)gatewayId;
+    });
 
     WebSocketConfig wsCfg;
     wsCfg.idleTimeoutMs = 60000;

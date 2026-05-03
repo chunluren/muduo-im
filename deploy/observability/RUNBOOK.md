@@ -237,5 +237,10 @@ mysql --defaults-file=deploy/observability/configs/.my.cnf -e "SELECT 1"
 | 8404 | haproxy `/metrics` |
 | 9100/9104/9121/9308 | exporters |
 
-**已知冲突**：chat server 默认 `server.ws_port = 9090` ↔ Prometheus :9090。
-要同时跑两个，改 `config.ini` 里 `server.ws_port` 为别的（如 9095）。
+**已知冲突**：
+1. chat server 默认 `server.ws_port = 9090` ↔ Prometheus :9090。
+   要同时跑两个，改 `config.ini` 里 `server.ws_port` 为别的（如 9095）。
+2. logic 默认 :9100 ↔ node_exporter :9100。
+   logic 同时跑时把它放到别的端口（启动参数 `0.0.0.0:9110`），
+   或不跑 node_exporter（多机部署时 node_exporter 在每台主机上跑，
+   不应该跟 logic 共置）。

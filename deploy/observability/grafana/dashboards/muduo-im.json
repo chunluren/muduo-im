@@ -99,6 +99,37 @@
         {"expr": "up", "refId": "A", "legendFormat": "{{job}} {{instance}}", "datasource": {"type": "prometheus", "uid": "prometheus"}}
       ],
       "fieldConfig": {"defaults": {"min": 0, "max": 1}}
+    },
+    {
+      "type": "timeseries",
+      "title": "Gateway: WS Sessions (current)",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 30},
+      "targets": [
+        {"expr": "gateway_ws_sessions_current", "refId": "A", "legendFormat": "{{instance}}", "datasource": {"type": "prometheus", "uid": "prometheus"}}
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Gateway: Logic Pool Size",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 30},
+      "targets": [
+        {"expr": "gateway_logic_pool_size", "refId": "A", "legendFormat": "{{instance}}", "datasource": {"type": "prometheus", "uid": "prometheus"}}
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Gateway: Logic RPC Rate (ok / unavailable / error / retried)",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 38},
+      "targets": [
+        {"expr": "rate(gateway_logic_rpc_ok_total[1m])",          "refId": "A", "legendFormat": "ok {{instance}}",          "datasource": {"type": "prometheus", "uid": "prometheus"}},
+        {"expr": "rate(gateway_logic_rpc_unavailable_total[1m])", "refId": "B", "legendFormat": "unavail {{instance}}",     "datasource": {"type": "prometheus", "uid": "prometheus"}},
+        {"expr": "rate(gateway_logic_rpc_error_total[1m])",       "refId": "C", "legendFormat": "error {{instance}}",       "datasource": {"type": "prometheus", "uid": "prometheus"}},
+        {"expr": "rate(gateway_logic_rpc_retried_total[1m])",     "refId": "D", "legendFormat": "retried {{instance}}",     "datasource": {"type": "prometheus", "uid": "prometheus"}}
+      ],
+      "fieldConfig": {"defaults": {"unit": "ops"}}
     }
   ],
   "refresh": "10s",

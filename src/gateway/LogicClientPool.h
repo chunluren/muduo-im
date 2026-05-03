@@ -16,6 +16,7 @@
 #include "LogicClient.h"
 #include "im/registry.grpc.pb.h"
 #include "util/EtcdClient.h"
+#include "util/Metrics.h"
 #include <atomic>
 #include <chrono>
 #include <iostream>
@@ -104,11 +105,16 @@ public:
         }
 
         auto st = primary->handleMessage(uid, deviceId, connId, payload, reply);
-        if (st.ok()) return st;
+        if (st.ok()) {
+            Metrics::instance().increment("gateway_logic_rpc_ok_total");
+            return st;
+        }
         if (st.error_code() != grpc::StatusCode::UNAVAILABLE &&
             st.error_code() != grpc::StatusCode::DEADLINE_EXCEEDED) {
+            Metrics::instance().increment("gateway_logic_rpc_error_total");
             return st;  // 业务错或其它，不重试
         }
+        Metrics::instance().increment("gateway_logic_rpc_unavailable_total");
 
         // 重试：找一个 addr 不同且 healthy 的备用，same-AZ 优先
         std::shared_ptr<LogicClient> backup;
@@ -137,7 +143,14 @@ public:
         if (!backup) return st;  // 没备用 → 把 primary 的状态原样返
         std::cerr << "[pool] retry " << primaryAddr << " → " << backup->addr()
                   << " (primary " << st.error_message() << ")\n";
-        return backup->handleMessage(uid, deviceId, connId, payload, reply);
+        Metrics::instance().increment("gateway_logic_rpc_retried_total");
+        auto retryStatus = backup->handleMessage(uid, deviceId, connId, payload, reply);
+        if (retryStatus.ok()) {
+            Metrics::instance().increment("gateway_logic_rpc_retry_ok_total");
+        } else {
+            Metrics::instance().increment("gateway_logic_rpc_retry_failed_total");
+        }
+        return retryStatus;
     }
 
     void notifyConnOpen(int64_t uid, const std::string& deviceId) {
