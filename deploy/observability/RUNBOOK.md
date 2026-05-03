@@ -129,21 +129,66 @@ groups:
         for: 5m
 ```
 
-## 5. 加 Grafana（可选）
+## 5. Grafana（已集成进 up.sh）
+
+### 装
 
 ```bash
+# Grafana 不在 Ubuntu 默认源，加官方 repo（一次）
+sudo mkdir -p /etc/apt/keyrings
+wget -qO - https://apt.grafana.com/gpg.key | sudo gpg --dearmor -o /etc/apt/keyrings/grafana.gpg
+echo "deb [signed-by=/etc/apt/keyrings/grafana.gpg] https://apt.grafana.com stable main" \
+    | sudo tee /etc/apt/sources.list.d/grafana.list
+sudo apt-get update -o Dir::Etc::sourceparts=- -o Dir::Etc::sourcelist=/etc/apt/sources.list.d/grafana.list
 sudo apt install -y grafana
-sudo systemctl start grafana-server
-# 访问 http://127.0.0.1:3000  默认 admin/admin
-# Add data source → Prometheus → http://127.0.0.1:9090
 ```
 
-可直接 import 的现成 dashboard ID（Grafana.com）：
-- 1860（Node Exporter Full）
-- 7362（MySQL Overview）
-- 11835（Redis Dashboard）
-- 7589（Kafka Exporter Overview）
-- 12693（HAProxy 2 Full）
+`up.sh` 会用 `GF_PATHS_*` 环境变量把 grafana 重定向到 `/tmp/observability/grafana/`，
+**不读** `/etc/grafana/grafana.ini`（系统配置只 grafana 用户能读）。
+
+### 用
+
+```bash
+bash deploy/observability/up.sh
+# Grafana UI: http://127.0.0.1:3000
+#   匿名 Viewer 直接看（无需登录）
+#   admin/admin 登录后可改面板
+```
+
+### 自动装载的 dashboard
+
+| 名 | 来源 | 看什么 |
+|---|---|---|
+| **muduo-im Overview** | 自定义（5 stat + 4 timeseries 面板） | 在线用户、worker 队列、HTTP QPS、sentinel 切换、targets up |
+| Node Exporter Full | grafana.com #1860 | 主机 CPU/内存/磁盘/网络 |
+| MySQL Overview | grafana.com #7362 | qps/innodb/replication |
+| Redis Dashboard | grafana.com #11835 | keys/connections/replication |
+| Kafka Exporter Overview | grafana.com #7589 | broker/topic/consumer lag |
+| HAProxy 2 Full | grafana.com #12693 | backend/server/connections |
+
+dashboards 都被 patch 过 datasource UID 为 `prometheus`，开箱即用。
+
+### 自定义 muduo-im dashboard 内容
+
+| panel | PromQL |
+|---|---|
+| Chat Online Users | `chat_online_users` |
+| Worker Pool Pending | `chat_worker_pool_pending_tasks` |
+| Worker Pool Size | `chat_worker_pool_size` |
+| Sentinel Master Switches (1h) | `increase(redis_sentinel_master_switches_total[1h])` |
+| HTTP Requests Total | `http_requests_total` |
+| HTTP QPS (rate 1m) | `rate(http_requests_total[1m])` |
+| Worker Drop Rate (1m) | `rate(chat_worker_pool_dropped_tasks[1m])` |
+| Online Users 时序 | `chat_online_users` |
+| Targets Up 时序 | `up` (per job/instance) |
+
+要加新 panel：编辑 `deploy/observability/grafana/dashboards/muduo-im.json`，
+30s 内 grafana 自动 reload（`updateIntervalSeconds: 30`）。
+
+### 加新 dashboard
+
+放 JSON 到 `deploy/observability/grafana/dashboards/` 即可；30s 自动出现在
+muduo-im folder 下。
 
 ## 6. 故障排查
 

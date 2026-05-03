@@ -1,0 +1,116 @@
+{
+  "annotations": {"list": []},
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "id": null,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "type": "stat",
+      "title": "Chat Online Users",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 6, "w": 4, "x": 0, "y": 0},
+      "targets": [
+        {"expr": "chat_online_users", "refId": "A", "datasource": {"type": "prometheus", "uid": "prometheus"}}
+      ],
+      "fieldConfig": {
+        "defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 1000}, {"color": "red", "value": 10000}]}}
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Worker Pool Pending",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 6, "w": 4, "x": 4, "y": 0},
+      "targets": [
+        {"expr": "chat_worker_pool_pending_tasks", "refId": "A", "datasource": {"type": "prometheus", "uid": "prometheus"}}
+      ],
+      "fieldConfig": {
+        "defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 1000}, {"color": "red", "value": 5000}]}}
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Worker Pool Size",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 6, "w": 4, "x": 8, "y": 0},
+      "targets": [
+        {"expr": "chat_worker_pool_size", "refId": "A", "datasource": {"type": "prometheus", "uid": "prometheus"}}
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Sentinel Master Switches (1h)",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 6, "w": 6, "x": 12, "y": 0},
+      "targets": [
+        {"expr": "increase(redis_sentinel_master_switches_total[1h])", "refId": "A", "datasource": {"type": "prometheus", "uid": "prometheus"}}
+      ],
+      "fieldConfig": {
+        "defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 1}, {"color": "red", "value": 3}]}}
+      }
+    },
+    {
+      "type": "stat",
+      "title": "HTTP Requests Total",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 6, "w": 6, "x": 18, "y": 0},
+      "targets": [
+        {"expr": "http_requests_total", "refId": "A", "datasource": {"type": "prometheus", "uid": "prometheus"}}
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "HTTP QPS (rate over 1m)",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 6},
+      "targets": [
+        {"expr": "rate(http_requests_total[1m])", "refId": "A", "legendFormat": "total qps", "datasource": {"type": "prometheus", "uid": "prometheus"}}
+      ],
+      "fieldConfig": {"defaults": {"unit": "reqps"}}
+    },
+    {
+      "type": "timeseries",
+      "title": "Worker Pool Drop Rate (per second)",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 6},
+      "targets": [
+        {"expr": "rate(chat_worker_pool_dropped_tasks[1m])", "refId": "A", "legendFormat": "dropped/s", "datasource": {"type": "prometheus", "uid": "prometheus"}}
+      ],
+      "fieldConfig": {"defaults": {"unit": "ops"}}
+    },
+    {
+      "type": "timeseries",
+      "title": "Online Users (15m)",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 14},
+      "targets": [
+        {"expr": "chat_online_users", "refId": "A", "legendFormat": "online", "datasource": {"type": "prometheus", "uid": "prometheus"}}
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Targets Up (per job)",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 22},
+      "targets": [
+        {"expr": "up", "refId": "A", "legendFormat": "{{job}} {{instance}}", "datasource": {"type": "prometheus", "uid": "prometheus"}}
+      ],
+      "fieldConfig": {"defaults": {"min": 0, "max": 1}}
+    }
+  ],
+  "refresh": "10s",
+  "schemaVersion": 38,
+  "style": "dark",
+  "tags": ["muduo-im"],
+  "templating": {"list": []},
+  "time": {"from": "now-30m", "to": "now"},
+  "timepicker": {},
+  "timezone": "",
+  "title": "muduo-im Overview",
+  "uid": "muduo-im-overview",
+  "version": 1,
+  "weekStart": ""
+}

@@ -3,7 +3,7 @@
 set -uo pipefail
 DATA_ROOT=/tmp/observability
 
-for name in prometheus kafka-exporter mysqld-exporter redis-exporter node-exporter; do
+for name in grafana prometheus kafka-exporter mysqld-exporter redis-exporter node-exporter; do
     pidfile="$DATA_ROOT/$name.pid"
     [[ -f "$pidfile" ]] || continue
     pid=$(cat "$pidfile")

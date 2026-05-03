@@ -79,10 +79,68 @@ start_proc prometheus prometheus \
     --storage.tsdb.retention.time=7d \
     --web.enable-lifecycle
 
-sleep 1
+# 6. Grafana —— 用本仓库的 provisioning 目录覆盖系统默认（不污染 /etc/grafana）
+GRAFANA_HOME=$(pwd)/grafana
+GF_RUNTIME=$DATA_ROOT/grafana
+mkdir -p "$GF_RUNTIME/data" "$GF_RUNTIME/logs" "$GF_RUNTIME/plugins"
+mkdir -p "$GF_RUNTIME/provisioning/datasources" \
+         "$GF_RUNTIME/provisioning/dashboards" \
+         "$GF_RUNTIME/provisioning/plugins" \
+         "$GF_RUNTIME/provisioning/notifiers" \
+         "$GF_RUNTIME/provisioning/alerting" \
+         "$GF_RUNTIME/provisioning/access-control"
+# 复制（而非软链）provisioning 文件，确保 grafana 用户可读
+cp "$GRAFANA_HOME/provisioning/datasources/prometheus.yml" \
+   "$GF_RUNTIME/provisioning/datasources/"
+# dashboards.yml 用绝对路径（grafana 不支持 env 替换 path）
+cat > "$GF_RUNTIME/provisioning/dashboards/default.yml" <<EOF
+apiVersion: 1
+providers:
+  - name: muduo-im-dashboards
+    folder: muduo-im
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    allowUiUpdates: true
+    options:
+      path: $GRAFANA_HOME/dashboards
+      foldersFromFilesStructure: false
+EOF
+chmod -R a+rX "$GF_RUNTIME" "$GRAFANA_HOME"
+
+# 我们不读 /etc/grafana/grafana.ini（grafana 用户 only），全靠环境变量配置
+GF_CONFIG="$GF_RUNTIME/grafana.ini"
+cat > "$GF_CONFIG" <<EOF
+[paths]
+data = $GF_RUNTIME/data
+logs = $GF_RUNTIME/logs
+plugins = $GF_RUNTIME/plugins
+provisioning = $GF_RUNTIME/provisioning
+
+[server]
+http_port = 3000
+
+[security]
+admin_user = admin
+admin_password = admin
+
+[auth.anonymous]
+enabled = true
+org_role = Viewer
+
+[analytics]
+reporting_enabled = false
+check_for_updates = false
+EOF
+
+start_proc grafana grafana server \
+    --homepath /usr/share/grafana \
+    --config "$GF_CONFIG"
+
+sleep 2
 echo
 echo "=== process state ==="
-for name in node-exporter redis-exporter mysqld-exporter kafka-exporter prometheus; do
+for name in node-exporter redis-exporter mysqld-exporter kafka-exporter prometheus grafana; do
     pidfile="$DATA_ROOT/$name.pid"
     if [[ -f "$pidfile" ]] && kill -0 "$(cat "$pidfile")" 2>/dev/null; then
         echo "  ✓ $name pid=$(cat "$pidfile")"
@@ -93,11 +151,12 @@ done
 
 echo
 echo "=== ports ==="
-ss -ltn 2>/dev/null | grep -E ':(9090|9100|9104|9121|9308)\s' | head -10
+ss -ltn 2>/dev/null | grep -E ':(9090|9100|9104|9121|9308|3000)\s' | head -10
 
 echo
 echo "✓ Observability stack up."
 echo "  Prometheus UI : http://127.0.0.1:9090"
 echo "  Targets       : http://127.0.0.1:9090/targets"
-echo "  Sample query  : http://127.0.0.1:9090/graph?g0.expr=up"
+echo "  Grafana UI    : http://127.0.0.1:3000  (匿名只读 / admin:admin 写)"
+echo "  Dashboards    : http://127.0.0.1:3000/dashboards (folder: muduo-im)"
 echo "  Stop          : bash deploy/observability/down.sh"
