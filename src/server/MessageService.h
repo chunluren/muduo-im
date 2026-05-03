@@ -48,21 +48,31 @@ public:
                             const std::string& content, int64_t timestamp) {
         auto conn = db_->acquire(3000);
         if (!conn || !conn->valid()) return false;
+        bool ok = savePrivateMessageTx(conn, msgId, from, to, content, timestamp);
+        db_->release(std::move(conn));
+        return ok;
+    }
 
-        // 使用 PreparedStatement 防 SQL 注入
-        PreparedStatement stmt(conn, "INSERT INTO private_messages (msg_id, from_user, to_user, content, timestamp) VALUES (?, ?, ?, ?, ?)");
-        if (!stmt.valid()) {
-            db_->release(std::move(conn));
-            return false;
-        }
+    /**
+     * @brief Phase 1.2 Outbox：在调用方持有的事务里写 private_messages
+     *
+     * 不 acquire / release 连接；由调用方负责。让 ChatServer 把
+     * "INSERT private_messages + INSERT outbox" 包成同一个事务。
+     */
+    bool savePrivateMessageTx(MySQLConnection::Ptr& conn,
+                              const std::string& msgId, int64_t from, int64_t to,
+                              const std::string& content, int64_t timestamp) {
+        if (!conn || !conn->valid()) return false;
+        PreparedStatement stmt(conn,
+            "INSERT INTO private_messages (msg_id, from_user, to_user, content, timestamp) "
+            "VALUES (?, ?, ?, ?, ?)");
+        if (!stmt.valid()) return false;
         stmt.bindString(1, msgId);
         stmt.bindInt64(2, from);
         stmt.bindInt64(3, to);
         stmt.bindString(4, content);
         stmt.bindInt64(5, timestamp);
-        bool ok = stmt.execute() && stmt.affectedRows() > 0;
-        db_->release(std::move(conn));
-        return ok;
+        return stmt.execute() && stmt.affectedRows() > 0;
     }
 
     /**
